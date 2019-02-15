@@ -1,0 +1,9 @@
+<launch>
+    <arg name="output" default="screen"/>
+
+    <node pkg="extrinsics_calibrator" name="extrinsics_calibrator_node" type="extrinsics_calibrator_node" output="$(arg output)">
+      <param name="params_file" value="$(find extrinsics_calibrator)/config/extrinsics_calib.yaml"/>
+    </node>
+
+
+</launch>

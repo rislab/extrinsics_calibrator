@@ -1,0 +1,18 @@
+extrinsics_calib_params:
+  odom_noise: [0.005, 0.005, 0.005, 0.005, 0.005, 0.005] #Noises, rotations in radians, then translations in m
+  landmark_noise: [2.0, 2.0, 2.0, 1, 1, 1]
+  intrinsics_noise: [1.0, 1.0, 0.001, 1.0, 1.0]
+  extrinsics_noise: [0.5,0.5,0.5, 0.1,0.1,0.1]
+  intrinsics_guess: [293.9, 294.4, 0, 194.3, 130.2] #fx, fy, skew, cx, cy
+  extrinsics_guess: [0,-1,0,0,  -1,0,0,0, 0,0,-1,0, 0,0,0,1]
+  measurement_noise: 2 #Noise in pixels of a detected tag corner
+  bag_file: /media/data/bagfiles/areneae01_170605_B.bag
+  image_topic: /mv_25000828_camera/mv_25000828/image_rect
+  odom_topic: /mocap/odom
+
+apriltag_tracker_params:
+  tag_size: 0.155
+  id: 1
+  K: [293.92, 0, 194.295, 0, 294.39, 130.185, 0, 0, 1]
+  D: [0,0,0,0]
+  do_debug: false
