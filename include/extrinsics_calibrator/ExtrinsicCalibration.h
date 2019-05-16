@@ -49,16 +49,12 @@ void get_pnp_pose(const std::vector<cv::Point2f> &p_img, gtsam::Pose3 &pose, con
   p_obj.push_back(cv::Point3f(s, s, 0));
   p_obj.push_back(cv::Point3f(-s, s, 0));
   cv::Mat rvec, tvec;
+  // The output is in float since all our parameters passed are floats...
   cv::solvePnP(p_obj, p_img, april_params.K, april_params.D, rvec, tvec);
-  cv::Mat R_cv;
-  cv::Rodrigues(rvec, R_cv);
-  Eigen::Matrix4d theta = Eigen::Matrix4d::Identity();
-  Eigen::Map<Eigen::Matrix3d> R(reinterpret_cast<double *>(R_cv.data), R_cv.rows, R_cv.cols);
-  Eigen::Quaterniond quat(R);
-  Eigen::Map<Eigen::Vector3d> t(reinterpret_cast<double *>(tvec.data), 3);
-  theta.block<3, 3>(0, 0) = quat.normalized().toRotationMatrix();
-  theta.block<3, 1>(0, 3) = t;
-  pose = gtsam::Pose3(theta);
+  pose = gtsam::Pose3(
+      gtsam::Rot3::Rodrigues(rvec.at<float>(0), rvec.at<float>(1),
+                             rvec.at<float>(2)),
+      gtsam::Point3(tvec.at<float>(0), tvec.at<float>(1), tvec.at<float>(2)));
 }
 
 class ExtrinsicCalibration
@@ -98,7 +94,7 @@ private:
   gtsam::noiseModel::Diagonal::shared_ptr landmark_noise_;
   gtsam::noiseModel::Diagonal::shared_ptr extrinsics_noise_;
   gtsam::noiseModel::Diagonal::shared_ptr intrinsics_noise_;
-  gtsam::noiseModel::Isotropic::shared_ptr measurement_noise_;
+  gtsam::noiseModel::Base::shared_ptr measurement_noise_;
 
   gtsam::Key last_key_;
   gtsam::Pose3 extrinsics_guess_;
@@ -114,11 +110,19 @@ public:
   {
     readConfig(config_file);
 
-    odom_noise_ = gtsam::noiseModel::Diagonal::Sigmas(params_.odom_noise);  // 0.05 radian Rotation, 0.1m Translation
-    extrinsics_noise_ = gtsam::noiseModel::Diagonal::Sigmas(params_.extrinsics_noise);
-    intrinsics_noise_ = gtsam::noiseModel::Diagonal::Sigmas(params_.intrinsics_noise);
-    measurement_noise_ = gtsam::noiseModel::Isotropic::Sigma(8, params_.measurement_noise);
-    std::cout << "Using Intrinsics guess : " << intrinsics_guess_ << "\n and extrinsics guess \n"
+    odom_noise_ = gtsam::noiseModel::Diagonal::Sigmas(
+        params_.odom_noise);  // 0.05 radian Rotation, 0.1m Translation
+    extrinsics_noise_ =
+        gtsam::noiseModel::Diagonal::Sigmas(params_.extrinsics_noise);
+    intrinsics_noise_ =
+        gtsam::noiseModel::Diagonal::Sigmas(params_.intrinsics_noise);
+    const gtsam::noiseModel::Base::shared_ptr iso_meas_noise =
+        gtsam::noiseModel::Isotropic::Sigma(8, params_.measurement_noise);
+    measurement_noise_ = gtsam::noiseModel::Robust::Create(
+        gtsam::noiseModel::mEstimator::Huber::Create(8),
+                                                     iso_meas_noise);
+    std::cout << "Using Intrinsics guess : " << intrinsics_guess_
+              << "\n and extrinsics guess \n"
               << extrinsics_guess_.matrix() << "\n";
   }
   void set_apriltag_params(apriltag_params params)
@@ -297,9 +301,12 @@ void ExtrinsicCalibration::addAbsoluteEdge(const gtsam::Pose3 &curr_pose,
     {
       case EXTRINSICS_ONLY:
         // Create a FiducialPPPfactor
-        graph_.add(gtsam::FiducialPoseProjectionFactor<gtsam::Pose3, gtsam::Pose3>(
-            measurement, measurement_noise_, gtsam::Symbol('o', last_key_ + 1), gtsam::Symbol('t', 0),
-            gtsam::Symbol('l', tag.first), intrinsics_guess_, params_.april_params.tag_size));
+        graph_.add(
+            gtsam::FiducialPoseProjectionFactor<gtsam::Pose3, gtsam::Pose3>(
+                measurement, measurement_noise_,
+                gtsam::Symbol('o', last_key_ + 1), gtsam::Symbol('t', 0),
+                gtsam::Symbol('l', tag.first), intrinsics_guess_,
+                params_.april_params.tag_size));
         break;
       default:
         throw std::runtime_error("Invalid mode!");
@@ -342,13 +349,14 @@ void ExtrinsicCalibration::addRelativeEdge(const gtsam::Pose3 &odom_edge,
       landmarks_added_.push_back(tag.first);
     }
 
-    switch (params_.mode)
-    {
+    switch (params_.mode) {
       case EXTRINSICS_ONLY:
         // Create a PPPfactor
-        graph_.add(gtsam::FiducialPoseProjectionFactor<gtsam::Pose3, gtsam::Pose3>(
-            measurement, measurement_noise_, gtsam::Symbol('o', last_key_), gtsam::Symbol('t', 0),
-            gtsam::Symbol('l', tag.first), intrinsics_guess_, params_.april_params.tag_size));
+        graph_.add(
+            gtsam::FiducialPoseProjectionFactor<gtsam::Pose3, gtsam::Pose3>(
+                measurement, measurement_noise_, gtsam::Symbol('o', last_key_),
+                gtsam::Symbol('t', 0), gtsam::Symbol('l', tag.first),
+                intrinsics_guess_, params_.april_params.tag_size));
         break;
       default:
         throw std::runtime_error("Invalid mode!");

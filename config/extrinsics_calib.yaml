@@ -1,18 +1,20 @@
 extrinsics_calib_params:
-  odom_noise: [0.005, 0.005, 0.005, 0.005, 0.005, 0.005] #Noises, rotations in radians, then translations in m
-  landmark_noise: [2.0, 2.0, 2.0, 1, 1, 1]
-  intrinsics_noise: [1.0, 1.0, 0.001, 1.0, 1.0]
-  extrinsics_noise: [0.5,0.5,0.5, 0.1,0.1,0.1]
-  intrinsics_guess: [293.9, 294.4, 0, 194.3, 130.2] #fx, fy, skew, cx, cy
-  extrinsics_guess: [0,-1,0,0,  -1,0,0,0, 0,0,-1,0, 0,0,0,1]
-  measurement_noise: 2 #Noise in pixels of a detected tag corner
-  bag_file: /media/data/bagfiles/areneae01_170605_B.bag
-  image_topic: /mv_25000828_camera/mv_25000828/image_rect
-  odom_topic: /mocap/odom
+  odom_noise: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1] #Noises, rotations in radians, then translations in m
+  landmark_noise: [1.0, 1.0, 1.0, 1, 1, 1]
+  intrinsics_noise: [0.1, 0.1, 0.001, 0.1, 0.1]
+  # extrinsics_noise: [0.1,0.1,0.1, 0.5,0.5,0.5]
+  extrinsics_noise: [1,1,1, 10,10,10]
+  intrinsics_guess: [530.132844320014, 528.4231401659118, 0, 484.8306373138666, 266.7362347663899] #fx, fy, skew, cx, cy
+  extrinsics_guess: [1,0,0,0,  0,1,0,0, 0,0,1,0, 0,0,0,1]
+  measurement_noise: 4 #Noise in pixels of a detected tag corner
+  bag_file: /media/data/bagfiles/kinect_one/camera_movement_1.bag
+  image_topic: /kinect2/qhd/image_color_rect
+  odom_topic: /kinect_one/vicon_odom
 
 apriltag_tracker_params:
-  tag_size: 0.155
-  id: 1
-  K: [293.92, 0, 194.295, 0, 294.39, 130.185, 0, 0, 1]
+  tag_size: 0.168
+  id: 27
+  K: [530.132844320014, 0.0, 484.8306373138666, 0.0, 528.4231401659118, 266.7362347663899, 0.0, 0.0, 1.0]
   D: [0,0,0,0]
-  do_debug: false
+  # D: [0.05137893228292329, -0.07913358530157011, -0.000939186223249489, 0.0005432608595405252, 0.028821551963704763]
+  do_debug: true
