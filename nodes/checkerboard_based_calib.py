@@ -83,29 +83,29 @@ def transform_matrix_from_odom(msg):
     return T
 
 
-def cost_function(c_to_body_log_plus_offset):
-    c_to_body = SE3.group_from_algebra(
-        se3.algebra_from_vector(c_to_body_log_plus_offset[:6]))
-    tag_in_board_offset = c_to_body_log_plus_offset[6:]
+def cost_function(theta):
+    body_to_c = SE3.group_from_algebra(
+        se3.algebra_from_vector(theta[:6]))
+
+    # tag_in_board_offset = theta[6:]
     t_in_board = tag_in_board.copy()
     # t_in_board[:3,3] += tag_in_board_offset
-    t_in_board = np.dot(t_in_board, SE3.group_from_algebra(
-        se3.algebra_from_vector(tag_in_board_offset)))
+    # t_in_board = np.dot(t_in_board, SE3.group_from_algebra(
+    # se3.algebra_from_vector(tag_in_board_offset)))
     error = 0
     img_count = 0
+    residual_vectors = []
     for measurement, body_to_world, board_to_world, tag_in_cam in data_tuples:
-        cam_to_world = np.dot(body_to_world, c_to_body)
         tag_pts = np.concatenate(
             (objp, np.ones((objp.shape[0], 1))), axis=1).transpose()
         tag_pts_in_world = np.dot(
             board_to_world, np.dot(t_in_board, tag_pts))
-        tag_pts_in_cam = np.dot(np.linalg.inv(cam_to_world), tag_pts_in_world)
+        tag_pts_in_body = np.dot(np.linalg.inv(
+            body_to_world), tag_pts_in_world)
+        tag_pts_in_cam = np.dot(body_to_c, tag_pts_in_body)
 
-        projections = np.dot(K, tag_pts_in_cam[:3, :])
-        projections /= projections[2]
-        projections = projections[:2].transpose()
-
-        projections.shape = (projections.shape[0], 1, projections.shape[1])
+        projections, jac = cv2.projectPoints(
+            tag_pts_in_body.T[:, :3], theta[:3], theta[3:6], K, np.zeros((1, 4)))
         projections = projections.astype(np.float32)
 
         # cv2.drawChessboardCorners(debug_img, (rows, cols), projections, True)
@@ -127,9 +127,11 @@ def cost_function(c_to_body_log_plus_offset):
             # pdb.set_trace()
 
         img_count += 1
+        residual_vectors.append((measurement - projections).ravel())
         # np.linalg.norm(measurement - projections)
-        error += np.sum((measurement - projections) ** 2)
-    return error
+        # error += np.sum((measurement - projections), axis=0)
+    pdb.set_trace()
+    return np.array(residual_vectors)
 
 
 buffer_size = 100
@@ -145,7 +147,6 @@ def draw(img, corners, imgpts):
         print 'oof'
         pdb.set_trace()
     return img
-    
 
 
 def got_tuple(img_msg, cam_odom, board_odom):
@@ -187,7 +188,8 @@ def got_tuple(img_msg, cam_odom, board_odom):
             imgpts, jac = cv2.projectPoints(
                 axis, rvecs, tvecs, K, np.zeros((1, 4)))
             if visualize:
-                cv2.drawChessboardCorners(debug_img, (cols, rows), corners2, ret)
+                cv2.drawChessboardCorners(
+                    debug_img, (cols, rows), corners2, ret)
                 img_msg = bridge.cv2_to_imgmsg(debug_img)
                 img_msg.header.frame_id = 'cam'
                 img_pub.publish(img_msg)
@@ -195,41 +197,41 @@ def got_tuple(img_msg, cam_odom, board_odom):
                 cam_info_pub.publish(K_msg)
 
                 debug_img = draw(debug_img, corners2, imgpts)
-                
+
                 print ret
 
                 cam_to_world = np.dot(body_to_world, cam_to_body)
 
                 broadcaster.sendTransform(body_to_world[:3, 3],
-                                        tf.transformations.quaternion_from_matrix(
+                                          tf.transformations.quaternion_from_matrix(
                     body_to_world),
                     rospy.Time.now(),
                     'body',
                     "world")
 
                 broadcaster.sendTransform(board_to_world[:3, 3],
-                                        tf.transformations.quaternion_from_matrix(
+                                          tf.transformations.quaternion_from_matrix(
                     board_to_world),
                     rospy.Time.now(),
                     'board',
                     "world")
 
                 broadcaster.sendTransform(cam_to_body[:3, 3],
-                                        tf.transformations.quaternion_from_matrix(
+                                          tf.transformations.quaternion_from_matrix(
                     cam_to_body),
                     rospy.Time.now(),
                     'cam',
                     "body")
 
                 broadcaster.sendTransform(tag_in_cam[:3, 3],
-                                        tf.transformations.quaternion_from_matrix(
+                                          tf.transformations.quaternion_from_matrix(
                     tag_in_cam),
                     rospy.Time.now(),
                     'tag',
                     "cam")
 
                 broadcaster.sendTransform(tag_in_board[:3, 3],
-                                        tf.transformations.quaternion_from_matrix(
+                                          tf.transformations.quaternion_from_matrix(
                     tag_in_board),
                     rospy.Time.now(),
                     'tag_gt',
@@ -248,10 +250,10 @@ def got_tuple(img_msg, cam_odom, board_odom):
 
                 # pixels = []
                 # Draw these pixels
-                
-                
+
                 # pdb.set_trace()
-            tag_in_cam_mocap_approx = np.dot(np.linalg.inv(cam_to_world), np.dot(board_to_world, tag_in_board))
+            tag_in_cam_mocap_approx = np.dot(np.linalg.inv(
+                cam_to_world), np.dot(board_to_world, tag_in_board))
             diff = np.dot(np.linalg.inv(tag_in_cam), tag_in_cam_mocap_approx)
 
             diff = se3.vector_from_algebra(SE3.algebra_from_group(diff))
@@ -260,20 +262,25 @@ def got_tuple(img_msg, cam_odom, board_odom):
             print np.linalg.norm(diff[:3])
             # I'm curious to see the projected mocap frame in the image too
             pts = np.eye(4)
-            pts[3,:] = 1
+            pts[3, :] = 1
 
             origin_in_cam = np.dot(tag_in_cam_mocap_approx, pts)
             projections = np.dot(K, origin_in_cam[:3, :])
             projections /= projections[2]
             projections = projections.astype(np.float32)
-            debug_img = cv2.line(debug_img, tuple(projections[:2,3]), tuple(projections[:2,0]), (0, 0, 127), 1)
-            debug_img = cv2.line(debug_img, tuple(projections[:2,3]), tuple(projections[:2,1]), (0, 127, 0), 1)
-            debug_img = cv2.line(debug_img, tuple(projections[:2,3]), tuple(projections[:2,2]), (127, 0, 0), 1)
+            debug_img = cv2.line(debug_img, tuple(projections[:2, 3]), tuple(
+                projections[:2, 0]), (0, 0, 127), 1)
+            debug_img = cv2.line(debug_img, tuple(projections[:2, 3]), tuple(
+                projections[:2, 1]), (0, 127, 0), 1)
+            debug_img = cv2.line(debug_img, tuple(projections[:2, 3]), tuple(
+                projections[:2, 2]), (127, 0, 0), 1)
             cv2.imshow('img', debug_img)
-            cv2.waitKey(-1)
+            cv2.waitKey(10)
 
-            data_tuples.append([corners2, body_to_world, board_to_world, tag_in_cam])
+            data_tuples.append(
+                [corners2, body_to_world, board_to_world, tag_in_cam])
             img_tuples.append(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR))
+
 
 if __name__ == "__main__":
     if params == small_board_params:
@@ -283,10 +290,10 @@ if __name__ == "__main__":
 
     if cam == 'kinect':
         topics_to_parse = ['/kinect2/qhd/image_color_rect',
-                        '/kinect_one/vicon_odom', checkerboard_topic, '/kinect2/qhd/camera_info']
+                           '/kinect_one/vicon_odom', checkerboard_topic, '/kinect2/qhd/camera_info']
     elif cam == 'realsense':
         topics_to_parse = ['/camera/color/image_raw',
-                        '/realsense_rig/vicon_odom', checkerboard_topic, '/camera/color/camera_info']
+                           '/realsense_rig/vicon_odom', checkerboard_topic, '/camera/color/camera_info']
 
     subs = []
     subs.append(Subscriber(topics_to_parse[0], Image))
@@ -327,22 +334,59 @@ if __name__ == "__main__":
         print 'Starting optimization...'
         from scipy.optimize import minimize
         # Since initial guess is pretty close to identity
-        initial_guess = np.array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        initial_guess = np.array([0, 0, 0, 0, 0, 0])
         # pdb.set_trace()
-        result = minimize(cost_function, initial_guess, bounds=np.array(
-            [[-1.0, 1.0], [-1.0, 1.0], [-1.0, 1.0], [-1.0, 1.0], [-1.0, 1.0], [-1.0, 1.0], [-0.1,0.1], [-0.1,0.1], [-0.1,0.1], [-0.1,0.1], [-0.1,0.1], [-0.1,0.1]]), method = 'L-BFGS-B')
+        # result = minimize(cost_function, initial_guess)
+        # cam_to_body = np.linalg.inv(SE3.group_from_algebra(
+        # se3.algebra_from_vector(result.x[:6])))
+
+        # The delta transform can just be solved by using solvePnP again
+        points_3d = []
+        points_2d = []
+        t_in_board = tag_in_board.copy()
+        for measurement, body_to_world, board_to_world, tag_in_cam in data_tuples:
+            tag_pts = np.concatenate(
+                (objp, np.ones((objp.shape[0], 1))), axis=1).transpose()
+            tag_pts_in_world = np.dot(
+                board_to_world, np.dot(t_in_board, tag_pts))
+            tag_pts_in_body = np.dot(np.linalg.inv(
+                body_to_world), tag_pts_in_world)
+            tag_pts_in_body = tag_pts_in_body[:3, :]
+            measurement.shape = (measurement.shape[0], measurement.shape[-1])
+            points_3d.append(tag_pts_in_body)
+            points_2d.append(measurement)
+
+        points_3d = np.concatenate(points_3d, axis=1).astype(np.float32).T
+        points_2d = np.concatenate(points_2d, axis=0).astype(np.float32)
+
+        # Refine K
+        K_copy = K.copy()
+        result = cv2.calibrateCamera(np.array([objp]*30), points_2d.reshape(30, 42, 2), (960, 540), K, np.array(
+            [[0, 0, 0, 0]], dtype=np.float32), flags=cv2.CALIB_USE_INTRINSIC_GUESS)
+        K = result[1]
+        D = result[2]
+        # pdb.set_trace()
+
+        _, rvec, tvec, _ = cv2.solvePnPRansac(
+            points_3d, points_2d, K, D)
+
+        body_to_cam = np.eye(4)
+        body_to_cam[:3, :3] = cv2.Rodrigues(rvec)[0]
+        body_to_cam[:3, 3] = tvec.ravel()
+        cam_to_body = np.linalg.inv(body_to_cam)
+
         print 'Done, results is'
-        print result
-        cam_to_body = SE3.group_from_algebra(se3.algebra_from_vector(result.x[:6]))
-        tag_in_board_offset = result.x[6:]
+        print rvec, tvec
+
+        # tag_in_board_offset = result.x[6:]
         print cam_to_body
-        print tag_in_board_offset
+        # print tag_in_board_offset
 
         # Perform validation visualisations
         i = 0
         t_in_board = tag_in_board.copy()
-        t_in_board = np.dot(t_in_board, SE3.group_from_algebra(
-        se3.algebra_from_vector(tag_in_board_offset)))
+        # t_in_board = np.dot(t_in_board, SE3.group_from_algebra(
+        # se3.algebra_from_vector(tag_in_board_offset)))
         # t_in_board[:3,3] += tag_in_board_offset
         for measurement, body_to_world, board_to_world, tag_in_cam in data_tuples:
             cam_to_world = np.dot(body_to_world, cam_to_body)
@@ -350,7 +394,8 @@ if __name__ == "__main__":
                 (objp, np.ones((objp.shape[0], 1))), axis=1).transpose()
             tag_pts_in_world = np.dot(
                 board_to_world, np.dot(t_in_board, tag_pts))
-            tag_pts_in_cam = np.dot(np.linalg.inv(cam_to_world), tag_pts_in_world)
+            tag_pts_in_cam = np.dot(np.linalg.inv(
+                cam_to_world), tag_pts_in_world)
 
             projections = np.dot(K, tag_pts_in_cam[:3, :])
             projections /= projections[2]
@@ -360,54 +405,54 @@ if __name__ == "__main__":
             projections.shape = (projections.shape[0], 1, projections.shape[1])
             projections = projections.astype(np.float32)
 
-            cv2.drawChessboardCorners(debug_img, (rows, cols), projections, True)
+            cv2.drawChessboardCorners(
+                debug_img, (rows, cols), projections, True)
             cv2.imshow('validation', debug_img)
             img_msg = bridge.cv2_to_imgmsg(debug_img)
             img_msg.header.frame_id = 'cam'
             img_pub.publish(img_msg)
             K_msg.header.stamp = img_msg.header.stamp
             cam_info_pub.publish(K_msg)
-            
+
             # And the tfs
 
             broadcaster.sendTransform(body_to_world[:3, 3],
-                                        tf.transformations.quaternion_from_matrix(
-                    body_to_world),
-                    rospy.Time.now(),
-                    'body',
-                    "world")
+                                      tf.transformations.quaternion_from_matrix(
+                body_to_world),
+                rospy.Time.now(),
+                'body',
+                "world")
 
             broadcaster.sendTransform(board_to_world[:3, 3],
-                                        tf.transformations.quaternion_from_matrix(
+                                      tf.transformations.quaternion_from_matrix(
                 board_to_world),
                 rospy.Time.now(),
                 'board',
                 "world")
 
             broadcaster.sendTransform(cam_to_body[:3, 3],
-                                        tf.transformations.quaternion_from_matrix(
+                                      tf.transformations.quaternion_from_matrix(
                 cam_to_body),
                 rospy.Time.now(),
                 'cam',
                 "body")
 
             broadcaster.sendTransform(tag_in_cam[:3, 3],
-                                        tf.transformations.quaternion_from_matrix(
+                                      tf.transformations.quaternion_from_matrix(
                 tag_in_cam),
                 rospy.Time.now(),
                 'tag',
                 "cam")
 
             broadcaster.sendTransform(tag_in_board[:3, 3],
-                                        tf.transformations.quaternion_from_matrix(
+                                      tf.transformations.quaternion_from_matrix(
                 tag_in_board),
                 rospy.Time.now(),
                 'tag_gt',
                 "board")
-            
-            
+
             cv2.waitKey(-1)
-            
+
             i += 1
 
         if raw_input('Save? y/n') in ['y', 'Y']:
@@ -416,10 +461,10 @@ if __name__ == "__main__":
 
     else:
         rospy.Subscriber(topics_to_parse[0], Image,
-                        lambda msg: subs[0].signalMessage(msg))
+                         lambda msg: subs[0].signalMessage(msg))
         rospy.Subscriber(topics_to_parse[1], Odometry,
-                        lambda msg: subs[1].signalMessage(msg))
+                         lambda msg: subs[1].signalMessage(msg))
         rospy.Subscriber(topics_to_parse[2], Odometry,
-                        lambda msg: subs[2].signalMessage(msg))
+                         lambda msg: subs[2].signalMessage(msg))
 
         rospy.spin()
