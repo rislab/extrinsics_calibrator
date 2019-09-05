@@ -390,12 +390,13 @@ if __name__ == "__main__":
     synchronizer.registerCallback(got_tuple)
 
     # See if cam_in_body exists, if not initialize to identity transform
-    save_name = path.split('.')[0] + '_' + cam + '_cam_to_body.npy'
-    file_path = glob.glob(save_name)
+    extrinsics_save_name = path.split('.')[0] + '_' + cam + '_cam_to_body.npy'
+    board_save_name = path.split('.')[0] + '_' + cam + '_tag_to_board.npy'
+    file_path = glob.glob(extrinsics_save_name)
     if not file_path:
         cam_to_body = np.eye(4)
     else:
-        cam_to_body = np.load(save_name)
+        cam_to_body = np.load(extrinsics_save_name)
 
     if use_bag:
         with rosbag.Bag(path, 'r') as bag:
@@ -538,8 +539,10 @@ if __name__ == "__main__":
             i += 1
         print 'Final error is {0}'.format(error)
         if raw_input('Save? y/n') in ['y', 'Y']:
-            print 'saving to '+save_name
-            np.save(save_name, cam_to_body)
+            print 'saving to '+extrinsics_save_name
+            np.save(extrinsics_save_name, cam_to_body)
+            print 'saving to '+board_save_name
+            np.save(board_save_name, t_in_board)
 
     else:
         rospy.Subscriber(topics_to_parse[0], Image,
