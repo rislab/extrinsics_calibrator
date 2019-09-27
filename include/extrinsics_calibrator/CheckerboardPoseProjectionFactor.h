@@ -5,27 +5,29 @@
  */
 #pragma once
 
-#include <gtsam/geometry/SimpleCamera.h>
+#include <gtsam/geometry/PinholeCamera.h>
 #include <gtsam/nonlinear/NonlinearFactor.h>
+#include <gtsam/geometry/Cal3_S2.h>
 #include <boost/optional.hpp>
 namespace gtsam {
 
 /**
- * Factor to measure a fiducial from a given pose
+ * Factor to measure a checkerboard from a given pose
  */
 template <class POSE, class LANDMARK, class CALIBRATION = Cal3_S2>
-class FiducialPoseProjectionFactor
+class CheckerboardPoseProjectionFactor
     : public NoiseModelFactor3<POSE, POSE, LANDMARK> {
  protected:
   // Keep a copy of measurement and calibration for I/O
   std::vector<Point2> measured_;      ///< 2D measurement
   boost::shared_ptr<CALIBRATION> K_;  ///< shared pointer to calibration object
-  double tag_size_;
-  std::vector<Point3> fiducial_points_;
+  int rows_, cols_;
+  double s_;
+  std::vector<Point3> checkerboard_points_;
 
   // verbosity handling for Cheirality Exceptions
-  bool throwCheirality_;  ///< If true, rethrows Cheirality exceptions (default:
-                          ///false)
+  bool throwCheirality_;    ///< If true, rethrows Cheirality exceptions (default:
+                            ///false)
   bool verboseCheirality_;  ///< If true, prints text for Cheirality exceptions
                             ///(default: false)
 
@@ -34,35 +36,37 @@ class FiducialPoseProjectionFactor
   typedef NoiseModelFactor3<POSE, POSE, LANDMARK> Base;
 
   /// shorthand for this class
-  typedef FiducialPoseProjectionFactor<POSE, LANDMARK, CALIBRATION> This;
+  typedef CheckerboardPoseProjectionFactor<POSE, LANDMARK, CALIBRATION> This;
 
   /// shorthand for a smart pointer to a factor
   typedef boost::shared_ptr<This> shared_ptr;
 
   /// Constructor
-  FiducialPoseProjectionFactor(const std::vector<Point2>& measured,
-                               const SharedNoiseModel& model, Key poseKey,
-                               Key transformKey, Key fiducialKey,
-                               const boost::shared_ptr<CALIBRATION>& K,
-                               const double& tag_size)
-      : Base(model, poseKey, transformKey, fiducialKey),
+  CheckerboardPoseProjectionFactor(const std::vector<Point2>& measured,
+                                   const SharedNoiseModel& model, Key poseKey,
+                                   Key transformKey, Key checkerboardKey,
+                                   const boost::shared_ptr<CALIBRATION>& K,
+                                   int rows, int cols,
+                                   const double& s)
+      : Base(model, poseKey, transformKey, checkerboardKey),
         measured_(measured),
         K_(K),
-        tag_size_(tag_size),
+        rows_(rows),
+        cols_(cols),
+        s_(s),
         throwCheirality_(false),
         verboseCheirality_(true) {
-    fiducial_points_.push_back(
-        gtsam::Point3(-tag_size_ / 2.0, -tag_size_ / 2.0, 0));
-    fiducial_points_.push_back(
-        gtsam::Point3(tag_size_ / 2.0, -tag_size_ / 2.0, 0));
-    fiducial_points_.push_back(
-        gtsam::Point3(tag_size_ / 2.0, tag_size_ / 2.0, 0));
-    fiducial_points_.push_back(
-        gtsam::Point3(-tag_size_ / 2.0, tag_size_ / 2.0, 0));
+    for (int i = 0; i < rows_; ++i) {
+      for (int j = 0; j < cols_; ++j) {
+        // The corners are provided in row major order
+        gtsam::Point3 corner(j * s_, i * s_, 0.0f);
+        checkerboard_points_.push_back(corner);
+      }
+    }
   }
 
   /** Virtual destructor */
-  virtual ~FiducialPoseProjectionFactor() {}
+  virtual ~CheckerboardPoseProjectionFactor() {}
 
   /// @return a deep copy of this factor
   virtual gtsam::NonlinearFactor::shared_ptr clone() const {
@@ -77,7 +81,7 @@ class FiducialPoseProjectionFactor
    */
   void print(const std::string& s = "",
              const KeyFormatter& keyFormatter = DefaultKeyFormatter) const {
-    std::cout << s << "FiducialPoseProjectionFactor, z = ";
+    std::cout << s << "CheckerboardPoseProjectionFactor, z = ";
     for (auto point : measured_) {
       traits<Point2>::Print(point);
     }
@@ -111,18 +115,18 @@ class FiducialPoseProjectionFactor
             pose.compose(transform, H_worldcam_wrt_body,
                          H_worldcam_wrt_bodycam),
             *K_);
-        Vector reprojectionError(8);
-        *H1 = Matrix::Zero(8, 6);
-        *H2 = Matrix::Zero(8, 6);
-        *H3 = Matrix::Zero(8, 6);  // FiducialObject is also a pose!
+        Vector reprojectionError(2 * checkerboard_points_.size());
+        *H1 = Matrix::Zero(2 * checkerboard_points_.size(), 6);
+        *H2 = Matrix::Zero(2 * checkerboard_points_.size(), 6);
+        *H3 = Matrix::Zero(2 * checkerboard_points_.size(), 6);  // checkerboardObject is also a pose!
         // @todo: Make sure that the measurement dimensionality is the same as
-        // fiducial
-        for (int i = 0; i < 4; i++) {
+        // checkerboard
+        for (int i = 0; i < checkerboard_points_.size(); i++) {
           Matrix h_worldpoint_wrt_worldcam_deltapose(2, 6),
               h_worldpoint_wrt_worldcam_deltapoint(2, 3),
               h_objectpoint_wrt_deltapose(3, 6);
           Point3 object_point_in_world = object.transformFrom(
-              fiducial_points_[i], h_objectpoint_wrt_deltapose);
+              checkerboard_points_[i], h_objectpoint_wrt_deltapose);
           Point2 error(
               // H1 is the jacobian wrt 6DoF pose 2x6
               // H2 is the jacobian wrt 3D point 2x3
@@ -146,11 +150,11 @@ class FiducialPoseProjectionFactor
         }
         return reprojectionError;
       } else {
-        Vector reprojectionError(8);
+        Vector reprojectionError(2 * checkerboard_points_.size());
         PinholeCamera<CALIBRATION> camera(pose.compose(transform), *K_);
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < checkerboard_points_.size(); i++) {
           Point3 object_point_in_world =
-              object.transformFrom(fiducial_points_[i]);
+              object.transformFrom(checkerboard_points_[i]);
           Point2 error(camera.project(object_point_in_world) - measured_[i]);
           reprojectionError[2 * i] = error[0];
           reprojectionError[2 * i + 1] = error[1];
@@ -158,16 +162,16 @@ class FiducialPoseProjectionFactor
         return reprojectionError;
       }
     } catch (CheiralityException& e) {
-      if (H1) *H1 = Matrix::Zero(8, 6);
-      if (H2) *H2 = Matrix::Zero(8, 6);
+      if (H1) *H1 = Matrix::Zero(2 * checkerboard_points_.size(), 6);
+      if (H2) *H2 = Matrix::Zero(2 * checkerboard_points_.size(), 6);
       if (verboseCheirality_)
-        std::cout << e.what() << ": FiducialObject "
+        std::cout << e.what() << ": checkerboardObject "
                   << DefaultKeyFormatter(this->key3())
                   << " moved behind camera "
                   << DefaultKeyFormatter(this->key1()) << std::endl;
       if (throwCheirality_) throw e;
     }
-    return Vector8::Constant(2.0 * K_->fx());
+    return Vector::Constant(2 * checkerboard_points_.size(), 2.0 * K_->fx());
   }
 
   /** return the measurement */
@@ -192,13 +196,15 @@ class FiducialPoseProjectionFactor
     ar& BOOST_SERIALIZATION_NVP(K_);
     ar& BOOST_SERIALIZATION_NVP(throwCheirality_);
     ar& BOOST_SERIALIZATION_NVP(verboseCheirality_);
-    ar& BOOST_SERIALIZATION_NVP(tag_size_);
-    ar& BOOST_SERIALIZATION_NVP(fiducial_points_);
+    ar& BOOST_SERIALIZATION_NVP(rows_);
+    ar& BOOST_SERIALIZATION_NVP(cols_);
+    ar& BOOST_SERIALIZATION_NVP(s_);
+    ar& BOOST_SERIALIZATION_NVP(checkerboard_points_);
   }
 };
 
 template <class POSE, class LANDMARK, class CALIBRATION>
-struct traits<FiducialPoseProjectionFactor<POSE, LANDMARK, CALIBRATION> >
+struct traits<CheckerboardPoseProjectionFactor<POSE, LANDMARK, CALIBRATION>>
     : public Testable<
-          FiducialPoseProjectionFactor<POSE, LANDMARK, CALIBRATION> > {};
-}  // gtsam
+          CheckerboardPoseProjectionFactor<POSE, LANDMARK, CALIBRATION>> {};
+}  // namespace gtsam

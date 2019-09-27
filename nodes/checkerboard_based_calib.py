@@ -21,6 +21,32 @@ import glob
 
 from geometry import SE3, se3
 
+# A yaml constructor is for loading from a yaml node.
+# This is taken from: http://stackoverflow.com/a/15942429
+
+
+def opencv_matrix_constructor(loader, node):
+    mapping = loader.construct_mapping(node, deep=True)
+    mat = np.array(mapping["data"])
+    mat.resize(mapping["rows"], mapping["cols"])
+    return mat
+
+
+yaml.add_constructor(u"tag:yaml.org,2002:opencv-matrix",
+                     opencv_matrix_constructor)
+
+# A yaml representer is for dumping structs into a yaml node.
+# So for an opencv_matrix type (to be compatible with c++'s FileStorage) we save the rows, cols, type and flattened-data
+
+
+def opencv_matrix_representer(dumper, mat):
+    mapping = {'rows': mat.shape[0], 'cols': mat.shape[1],
+               'dt': 'd', 'data': mat.reshape(-1).tolist()}
+    return dumper.represent_mapping(u"tag:yaml.org,2002:opencv-matrix", mapping)
+
+
+yaml.add_representer(np.ndarray, opencv_matrix_representer)
+
 datatype = np.float32
 np.set_printoptions(precision=4, suppress=True)
 
@@ -40,8 +66,14 @@ small_board_params['rows'] = 4
 small_board_params['cols'] = 6
 cam_types = ['kinect', 'realsense']
 
-cam = cam_types[0]
-params = big_board_params
+cam = cam_types[1]
+params = small_board_params
+use_gtsam = True
+
+if use_gtsam:
+    from extrinsics_calibrator.ExtrinsicCalibPyModules import CheckerboardExtrinsicCalibration
+    calibrator = CheckerboardExtrinsicCalibration(
+        '../config/checkerboard_extrinsics_calib.yaml')
 
 K = None
 K_msg = None
@@ -69,6 +101,8 @@ visualize = True
 
 objp = np.zeros((cols*rows, 3), np.float32)
 objp[:, :2] = s * np.mgrid[0:cols, 0:rows].T.reshape(-1, 2)
+tag_pts = np.concatenate(
+    (objp, np.ones((objp.shape[0], 1))), axis=1).transpose()
 
 diffs_vector = []
 
@@ -96,8 +130,6 @@ def cost_function(theta):
     img_count = 0
     residual_vectors = []
     for measurement, body_to_world, board_to_world, tag_in_cam in data_tuples:
-        tag_pts = np.concatenate(
-            (objp, np.ones((objp.shape[0], 1))), axis=1).transpose()
         tag_pts_in_world = np.dot(
             board_to_world, np.dot(t_in_board, tag_pts))
         tag_pts_in_body = np.dot(np.linalg.inv(
@@ -127,10 +159,11 @@ def cost_function(theta):
             # pdb.set_trace()
 
         img_count += 1
+        error += (np.sqrt(np.sum((measurement - projections)**2, axis=1))).sum()
         residual_vectors.append((measurement - projections).ravel())
         # np.linalg.norm(measurement - projections)
         # error += np.sum((measurement - projections), axis=0)
-    return np.array(residual_vectors).ravel()
+    return error  # np.array(residual_vectors).ravel()
 
 
 def jac_function(theta):
@@ -146,8 +179,6 @@ def jac_function(theta):
     img_count = 0
     jacs = []
     for measurement, body_to_world, board_to_world, tag_in_cam in data_tuples:
-        tag_pts = np.concatenate(
-            (objp, np.ones((objp.shape[0], 1))), axis=1).transpose()
         tag_pts_in_world = np.dot(
             board_to_world, np.dot(t_in_board, tag_pts))
         tag_pts_in_body = np.dot(np.linalg.inv(
@@ -170,19 +201,18 @@ def meta_cost_function(t_offset_theta, use_ransac=False):
     delta[:3, 3] = t_offset_theta[3:]
 
     t_in_board = np.dot(tag_in_board, delta)
-
+    body_to_cam = np.linalg.inv(cam_to_body)
     error = 0
     for measurement, body_to_world, board_to_world, tag_in_cam in data_tuples:
-        tag_pts = np.concatenate(
-            (objp, np.ones((objp.shape[0], 1))), axis=1).transpose()
-        tag_pts_in_world = np.dot(
-            board_to_world, np.dot(t_in_board, tag_pts))
-        tag_pts_in_body = np.dot(np.linalg.inv(
-            body_to_world), tag_pts_in_world)
-        tag_pts_in_body = tag_pts_in_body[:3, :]
+        board_in_body = np.dot(np.linalg.inv(
+            body_to_world), board_to_world)
+        board_in_cam = np.dot(body_to_cam, board_in_body)
+        tag_in_cam = np.dot(board_in_cam, t_in_board)
+        tag_pts_in_cam = np.dot(tag_in_cam, tag_pts)[:3, :]
+
         measurement.shape = (measurement.shape[0], measurement.shape[-1])
 
-        points_3d.append(tag_pts_in_body)
+        points_3d.append(tag_pts_in_cam)
         points_2d.append(measurement)
 
     points_3d = np.concatenate(points_3d, axis=1).astype(np.float32).T
@@ -203,8 +233,7 @@ def meta_cost_function(t_offset_theta, use_ransac=False):
     tv = result[2]
     error = 0
     for measurement, body_to_world, board_to_world, tag_in_cam in data_tuples:
-        tag_pts = np.concatenate(
-            (objp, np.ones((objp.shape[0], 1))), axis=1).transpose()
+
         tag_pts_in_world = np.dot(
             board_to_world, np.dot(t_in_board, tag_pts))
         tag_pts_in_body = np.dot(np.linalg.inv(
@@ -262,6 +291,7 @@ def got_tuple(img_msg, cam_odom, board_odom):
             return
         corners2 = cv2.cornerSubPix(gray, corners, (5, 5), (-1, -1), criteria)
         corners2.shape = (corners2.shape[0], corners2.shape[-1])
+
         # Find the rotation and translation vectors.
         ret, rvecs, tvecs = cv2.solvePnP(
             objp, corners2, K, np.array([[0, 0, 0, 0]], dtype=np.float32))
@@ -273,6 +303,13 @@ def got_tuple(img_msg, cam_odom, board_odom):
             # project 3D points to image plane
             imgpts, jac = cv2.projectPoints(
                 axis, rvecs, tvecs, K, np.zeros((1, 4)))
+
+            if use_gtsam:
+                body_to_board = np.dot(
+                    np.linalg.inv(board_to_world), body_to_world)
+                calibrator.add_measurement(body_to_board.astype(
+                    np.float), corners2.astype(np.float))
+
             if visualize:
                 cv2.drawChessboardCorners(
                     debug_img, (cols, rows), corners2, ret)
@@ -323,21 +360,7 @@ def got_tuple(img_msg, cam_odom, board_odom):
                     'tag_gt',
                     "board")
                 # tag_in_cam = np.eye(4).astype(datatype)
-                # # Now see if the 3D points projected make sense.
 
-                # tag_pts = np.concatenate((objp, np.ones((objp.shape[0], 1))), axis=1).transpose()
-                # tag_pts_in_world = np.dot(
-                #     board_to_world, np.dot(tag_in_board, tag_pts))
-                # tag_pts_in_cam = np.dot(np.linalg.inv(cam_to_world), tag_pts_in_world)
-
-                # projections = np.dot(K, tag_pts_in_cam[:3, :])
-                # projections /= projections[2]
-                # projections = projections[:2].transpose()
-
-                # pixels = []
-                # Draw these pixels
-
-                # pdb.set_trace()
             tag_in_cam_mocap_approx = np.dot(np.linalg.inv(
                 cam_to_world), np.dot(board_to_world, tag_in_board))
             diff = np.dot(np.linalg.inv(tag_in_cam), tag_in_cam_mocap_approx)
@@ -393,10 +416,13 @@ if __name__ == "__main__":
     extrinsics_save_name = path.split('.')[0] + '_' + cam + '_cam_to_body.npy'
     board_save_name = path.split('.')[0] + '_' + cam + '_tag_to_board.npy'
     file_path = glob.glob(extrinsics_save_name)
-    if not file_path:
-        cam_to_body = np.eye(4)
-    else:
-        cam_to_body = np.load(extrinsics_save_name)
+    # if not file_path:
+    with open('../config/checkerboard_extrinsics_calib.yaml', 'r') as f:
+        cam_to_body = np.array(
+            yaml.load(f)['extrinsics_calib_params']['extrinsics_guess']).reshape(4, 4)
+    print 'cam_to_body loaded {0}'.format(cam_to_body)
+    # else:
+    # cam_to_body = np.load(extrinsics_save_name)
 
     if use_bag:
         with rosbag.Bag(path, 'r') as bag:
@@ -416,44 +442,84 @@ if __name__ == "__main__":
                         counter += 1
                         if counter % 1000 == 0:
                             print 'Read {0} tuples'.format(counter)
+        if use_gtsam:
+            t_in_board = np.eye(4)
+            cam_to_body = np.eye(4)
+            calibrator.solve(cam_to_body, t_in_board)
+            body_to_cam = np.linalg.inv(cam_to_body)
+        else:
+            # Try to use a black box optimizer
+            print 'Starting optimization...'
+            from scipy.optimize import minimize, least_squares
+            # Since initial guess is pretty close to identity
+            initial_guess = np.array([0.0, 0, 0, 0, 0, 0])
+            # if use_camodocal_prealign:
+            #     # Save the tuple pairs in opencv format
+            #     # example
+            #     with open('TransformPairsInput.yml', 'w') as f:
+            #         f.write("%YAML:1.0\n")
+            #         f.write("frameCount: " + str(len(data_tuples)) + "\n")
+            #         ind = 0
+            #         for measurement, body_to_world, board_to_world, tag_in_cam in data_tuples:
+            #             tag_in_world = np.dot(
+            #                 board_to_world, tag_in_board)
+            #             tag_in_body = np.dot(np.linalg.inv(
+            #                 body_to_world), tag_in_world)
+            #             yaml.dump({"T1_"+str(ind): tag_in_cam,
+            #                        "T2_"+str(ind): tag_in_body}, f)
+            #             ind += 1
+            #     print 'Written to TransformPairsInput.yml, replace in calib package and continue when CalibratedTransform.yml is copied into cwd...'
+            #     pdb.set_trace()
+            #     with open('CalibratedTransform.yml', 'r') as f:
+            #         f.readline()
+            #         T_init_guess = yaml.load(
+            #             f)['ArmTipToMarkerTagTransform'].reshape(4, 4)
+            #         # T_init_guess = np.linalg.inv(T_init_guess)
+            #         rvec = cv2.Rodrigues(T_init_guess[:3, :3])[0]
+            #         tvec = T_init_guess[:3, 3]
+            #     initial_guess = se3.vector_from_algebra(
+            #         SE3.algebra_from_group(np.linalg.inv(T_init_guess)))
+            #     pdb.set_trace()
 
-        # Try to use a black box optimizer
-        print 'Starting optimization...'
-        from scipy.optimize import minimize, least_squares
-        # Since initial guess is pretty close to identity
-        initial_guess = np.array([0, 0, 0, 0, 0, 0])
-        # res_lsq = least_squares(cost_function, initial_guess)
-        # rvec = res_lsq.x[:3]
-        # tvec = res_lsq.x[3:]
-        # pdb.set_trace()
-        result = minimize(lambda x: meta_cost_function(x)[1], initial_guess)
-        delta = np.eye(4)
-        delta[:3, :3] = cv2.Rodrigues(result.x[:3])[0]
-        delta[:3, 3] = result.x[3:]
+            # The delta transform can just be solved by using solvePnP again
+            # result = minimize(lambda x: meta_cost_function(x)[1], initial_guess)
+            result, error = meta_cost_function(initial_guess, True)
 
-        t_in_board = np.dot(tag_in_board, delta)
+            # res_lsq = least_squares(cost_function, initial_guess)
+            # rvec = res_lsq.x[:3]
+            # tvec = res_lsq.x[3:]
+            # pdb.set_trace()
 
-        pdb.set_trace()
-        # cam_to_body = np.linalg.inv(SE3.group_from_algebra(
-        # se3.algebra_from_vector(result.x[:6])))
+            # result = minimize(cost_function, initial_guess)
+            # pdb.set_trace()
+            # pdb.set_trace()
+            # rvec = result.x[:3]
+            # tvec = result.x[3:]
+            # print 'error was {0}'.format(error)
+            rvec = result[1]
+            tvec = result[2]
+            inliers = result[3]
+            body_to_cam = np.eye(4)
+            body_to_cam[:3, :3] = cv2.Rodrigues(rvec)[0]
+            body_to_cam[:3, 3] = tvec.ravel()
+            cam_to_body = np.linalg.inv(body_to_cam)
 
-        # The delta transform can just be solved by using solvePnP again
-        result, error = meta_cost_function(result.x, True)
-        # print 'error was {0}'.format(error)
-        rvec = result[1]
-        tvec = result[2]
-        inliers = result[3]
-        body_to_cam = np.eye(4)
-        body_to_cam[:3, :3] = cv2.Rodrigues(rvec)[0]
-        body_to_cam[:3, 3] = tvec.ravel()
-        cam_to_body = np.linalg.inv(body_to_cam)
+            # print 'Done, results is'
+            # print rvec, tvec
 
-        # print 'Done, results is'
-        # print rvec, tvec
+            # tag_in_board_offset = result.x[6:]
+            print 'cam_in_body found was {0}'.format(cam_to_body)
 
-        # tag_in_board_offset = result.x[6:]
-        print cam_to_body
-        # print tag_in_board_offset
+            # result = minimize(lambda x: meta_cost_function(x)
+            #                   [1], np.zeros((6, 1)))
+            # delta = np.eye(4)
+            # delta[:3, :3] = cv2.Rodrigues(result.x[:3])[0]
+            # delta[:3, 3] = result.x[3:]
+
+            # t_in_board = np.dot(tag_in_board, delta)
+            # print 'tag_in_board was {0}'.format(t_in_board)
+            # print tag_in_board_offset
+            t_in_board = tag_in_board.copy()
 
         # Perform validation visualisations
         i = 0
@@ -462,35 +528,66 @@ if __name__ == "__main__":
         # se3.algebra_from_vector(tag_in_board_offset)))
         # t_in_board[:3,3] += tag_in_board_offset
         error = 0
-        for measurement, body_to_world, board_to_world, tag_in_cam in data_tuples:
-            tag_pts = np.concatenate(
-                (objp, np.ones((objp.shape[0], 1))), axis=1).transpose()
-            tag_pts_in_world = np.dot(
-                board_to_world, np.dot(t_in_board, tag_pts))
-            tag_pts_in_body = np.dot(np.linalg.inv(
-                body_to_world), tag_pts_in_world)
-            tag_pts_in_cam = np.dot(body_to_cam, tag_pts_in_body)
 
-            projections, jac = cv2.projectPoints(
-                tag_pts_in_body.T[:, :3], rvec, tvec, K, np.zeros((1, 4)))
+        for measurement, body_to_world, board_to_world, tag_in_cam in data_tuples:
+            board_in_body = np.dot(np.linalg.inv(
+                body_to_world), board_to_world)
+            board_in_cam = np.dot(body_to_cam, board_in_body)
+            tag_in_cam = np.dot(board_in_cam, t_in_board)
+            tag_pts_in_cam = np.dot(tag_in_cam, tag_pts)
+
+            # projections, jac = cv2.projectPoints(
+            #     tag_pts_in_body.T[:, :3], np.array([0.0,0,0]), np.array([0.0,0,0]), K, np.zeros((1, 4)))
+            # pdb.set_trace()
+
+            # projections.shape = (projections.shape[0], projections.shape[-1])
+            # projections = projections.astype(np.float32)
+
+            projections = np.dot(K, tag_pts_in_cam[:3, :])
+            projections /= projections[2, :]
+            projections = projections[:2, :].T
 
             debug_img = img_tuples[i]
-            projections.shape = (projections.shape[0], projections.shape[-1])
-            projections = projections.astype(np.float32)
-
             error += (np.sqrt(np.sum((measurement - projections)**2, axis=1))).sum()
 
-            for j in range(projections.shape[0]):
-                if(px_counter in inliers):
-                    cv2.circle(
-                        debug_img, (projections[j, 0], projections[j, 1]), 5, (0, 255, 0), 2)
-                    cv2.circle(
-                        debug_img, (measurement[j, 0], measurement[j, 1]), 5, (0, 0, 255), 2)
-                    cv2.line(debug_img, (measurement[j, 0], measurement[j, 1]),
-                             (projections[j, 0], projections[j, 1]), (0, 255, 0))
-                px_counter += 1
+            projections = projections.astype(int)
 
-            cv2.imshow('validation', debug_img)
+            for j in range(projections.shape[0]):
+                # if(px_counter in inliers):
+                cv2.circle(
+                    debug_img, (projections[j, 0], projections[j, 1]), 5, (0, 255, 0), 2)
+                cv2.circle(
+                    debug_img, (measurement[j, 0], measurement[j, 1]), 5, (0, 0, 255), 2)
+                cv2.line(debug_img, (measurement[j, 0], measurement[j, 1]),
+                         (projections[j, 0], projections[j, 1]), (0, 255, 0))
+                # px_counter += 1
+
+            pts = np.eye(4)
+            pts[3, :] = 1
+            origin_in_cam = np.dot(tag_in_cam, pts)
+            projections = np.dot(K, origin_in_cam[:3, :])
+            projections /= projections[2]
+            projections = projections.astype(np.float32)
+            debug_img = cv2.line(debug_img, tuple(projections[:2, 3]), tuple(
+                projections[:2, 0]), (0, 0, 127), 1)
+            debug_img = cv2.line(debug_img, tuple(projections[:2, 3]), tuple(
+                projections[:2, 1]), (0, 127, 0), 1)
+            debug_img = cv2.line(debug_img, tuple(projections[:2, 3]), tuple(
+                projections[:2, 2]), (127, 0, 0), 1)
+
+            origin_in_cam = np.dot(board_in_cam, pts)
+            projections = np.dot(K, origin_in_cam[:3, :])
+            projections /= projections[2]
+            projections = projections.astype(np.float32)
+            debug_img = cv2.line(debug_img, tuple(projections[:2, 3]), tuple(
+                projections[:2, 0]), (0, 0, 127), 1)
+            debug_img = cv2.line(debug_img, tuple(projections[:2, 3]), tuple(
+                projections[:2, 1]), (0, 127, 0), 1)
+            debug_img = cv2.line(debug_img, tuple(projections[:2, 3]), tuple(
+                projections[:2, 2]), (127, 0, 0), 1)
+
+            cv2.imshow('Validation ({0}/{1})'.format(i,
+                                                     len(data_tuples)-1), debug_img)
             img_msg = bridge.cv2_to_imgmsg(debug_img)
             img_msg.header.frame_id = 'cam'
             img_pub.publish(img_msg)

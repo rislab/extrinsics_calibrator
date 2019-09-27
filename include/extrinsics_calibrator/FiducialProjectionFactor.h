@@ -125,7 +125,7 @@ class FiducialProjectionFactor : public NoiseModelFactor2<Pose3, Pose3> {
           for (int i = 0; i < 4; i++) {
             Matrix h1(2, 6), h2(2, 3), h0(3, 6);
             Point3 object_point_in_world =
-                object.transform_from(fiducial_points_[i], h0);
+                object.transformFrom(fiducial_points_[i], h0);
             Point2 error(
                 // H1 is the jacobian wrt 6DoF pose 2x6
                 // H2 is the jacobian wrt 3D point 2x3
@@ -145,7 +145,7 @@ class FiducialProjectionFactor : public NoiseModelFactor2<Pose3, Pose3> {
           PinholeCamera<CALIBRATION> camera(pose.compose(*body_P_sensor_), *K_);
           for (int i = 0; i < 4; i++) {
             Point3 object_point_in_world =
-                object.transform_from(fiducial_points_[i]);
+                object.transformFrom(fiducial_points_[i]);
             Point2 error(camera.project(object_point_in_world) - measured_[i]);
             reprojectionError[2 * i] = error[0];
             reprojectionError[2 * i + 1] = error[1];
@@ -164,7 +164,7 @@ class FiducialProjectionFactor : public NoiseModelFactor2<Pose3, Pose3> {
       //        for (int i = 0; i < 4; i++) {
       //          if (H1) {
       //            Matrix h1(2, 6), h2(2, 3), h0(3, 6);
-      //            Point3 object_point_in_world = object.transform_from(
+      //            Point3 object_point_in_world = object.transformFrom(
       //                object.points_[i], h0);
       //            Point2 error(
       //            // H1 is the jacobian wrt 6DoF pose 2x6
@@ -178,7 +178,7 @@ class FiducialProjectionFactor : public NoiseModelFactor2<Pose3, Pose3> {
       //            H1->block<2, 6>(2 * i, 0) = h1;
       //            H2->block<2, 6>(2 * i, 0) = h2 * h0;
       //          } else {
-      //            Point3 object_point_in_world = object.transform_from(
+      //            Point3 object_point_in_world = object.transformFrom(
       //                object.points_[i]);
       //            Point2 error(
       //                camera.project(object_point_in_world, H1, H2,

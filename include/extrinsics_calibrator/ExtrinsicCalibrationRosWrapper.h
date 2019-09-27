@@ -16,6 +16,9 @@
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/time_synchronizer.h>
 
+#include <image_transport/image_transport.h>
+#include <cv_bridge/cv_bridge.h>
+
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/Image.h>
 #include <boost/foreach.hpp>
@@ -57,6 +60,9 @@ class ExtrinsicCalibrationRosWrapper {
 
   std::shared_ptr<ros::NodeHandle> nh_;
   tf2_ros::TransformBroadcaster broadcaster_;
+
+  std::shared_ptr<image_transport::ImageTransport> it_;
+  image_transport::Publisher debug_img_pub_;
 
   std::shared_ptr<ExtrinsicCalibration> calib_;
   std::shared_ptr<AprilTagTrackerRosWrapper> apriltag_detector_;
@@ -176,6 +182,9 @@ void ExtrinsicCalibrationRosWrapper::initSubscribers() {
   // Register callbacks
   synchronizer_->registerCallback(
       boost::bind(&ExtrinsicCalibrationRosWrapper::callback, this, _1, _2));
+
+  it_ = std::make_shared<image_transport::ImageTransport> (*nh_);
+  debug_img_pub_ =  it_->advertise("debug_image", 1);
 }
 
 void ExtrinsicCalibrationRosWrapper::callback(
@@ -223,6 +232,8 @@ void ExtrinsicCalibrationRosWrapper::callback(
     //    std::vector<std::pair<uint, gtsam::Pose3>> landmarks;
     //    calib_->landmark_init_list(landmarks);
     //    publishLandmarks(landmarks, image_msg->header.stamp.toSec());
+    sensor_msgs::ImagePtr msg = cv_bridge::CvImage(std_msgs::Header(), "bgr8", debug_img).toImageMsg();
+    debug_img_pub_.publish(msg);
   }
   // And also broadcast the current pose
   Eigen::Matrix4d theta = curr_pose.matrix();
