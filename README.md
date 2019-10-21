@@ -1,6 +1,8 @@
 # REQUIREMENTS #
 * https://github.com/rislab/gtsam_catkin.git
 * https://github.com/rislab/apriltag_tracker
+* https://github.com/ipab-slmc/pybind11_catkin
+
 
 Package for a simple camera extrinsics calibration node that performs batch optimization to obtain a camera to body transformation from an odometry source (mocap) and detected apriltags. This is done by utilizing multiple views of the apriltag detected pixels and incorporating them into a graph using a custom factor.
 

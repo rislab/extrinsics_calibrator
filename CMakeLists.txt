@@ -47,7 +47,7 @@ message("GTSAM_CATKIN Includes : ${gtsam_catkin_INCLUDE_DIRS}")
 message("GTSAM_CATKIN Libraries : ${gtsam_catkin_LIBRARIES}")
 
 # Add pybind GTSAM module
-add_library(ExtrinsicCalibPyModules SHARED src/ExtrinsicCalibPyModules.cpp src/CheckerboardExtrinsicCalibration.cpp)
+add_library(ExtrinsicCalibPyModules SHARED src/ExtrinsicCalibPyModules.cpp src/CheckerboardExtrinsicCalibration.cpp src/Cal3DS3.cpp)
 target_link_libraries(ExtrinsicCalibPyModules ${catkin_LIBRARIES} ${gtsam_catkin_LIBRARIES})
 set_target_properties(
   ExtrinsicCalibPyModules

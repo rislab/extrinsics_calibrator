@@ -17,6 +17,9 @@ from cv_bridge import CvBridge
 from apriltag_tracker._AprilTagTracker import AprilTagTracker
 from apriltag_tracker.msg import Apriltags
 
+from visualization_msgs.msg import Marker, MarkerArray
+from geometry_msgs.msg import Point
+
 import glob
 
 from geometry import SE3, se3
@@ -54,7 +57,9 @@ np.set_printoptions(precision=4, suppress=True)
 # path = '/media/icoderaven/958c5fed-c873-4414-9ed4-c0662983e711/3dv_data/depth_calib/ext_calib_rs_kinect.bag'
 # path = '/media/icoderaven/958c5fed-c873-4414-9ed4-c0662983e711/3dv_data/extrinsics_calib_plus_demo/ext_calib_rs_kinect_board.bag'
 # path = '/media/icoderaven/SHENEXTDRIVE/calib_data/extrinsics_calib/ext_calib_kinect_small_board.bag'
-path = '/media/icoderaven/958c5fed-c873-4414-9ed4-c0662983e711/3dv_data/ext_calib_kinect_big_board.bag'
+# path = '/media/icoderaven/958c5fed-c873-4414-9ed4-c0662983e711/3dv_data/ext_calib_kinect_big_board.bag'
+# path = '/media/icoderaven/958c5fed-c873-4414-9ed4-c0662983e711/3dv_data/icra20/ext_calib_realsense_new_small_board.bag'
+path = '/home/icoderaven/ext_calib_realsense_new_small_board.bag'
 big_board_params = {}
 big_board_params['s'] = 0.13
 big_board_params['rows'] = 6
@@ -93,11 +98,13 @@ bridge = CvBridge()
 broadcaster = tf.TransformBroadcaster()
 img_pub = rospy.Publisher('/cam/debug_img', Image)
 cam_info_pub = rospy.Publisher('/cam/camera_info', CameraInfo)
+marker_pub = rospy.Publisher('/markers', Marker)
 
 data_tuples = []
 img_tuples = []
 use_bag = True
 visualize = True
+use_camodocal_prealign = False
 
 objp = np.zeros((cols*rows, 3), np.float32)
 objp[:, :2] = s * np.mgrid[0:cols, 0:rows].T.reshape(-1, 2)
@@ -278,12 +285,18 @@ def got_tuple(img_msg, cam_odom, board_odom):
     gray = cv2.cvtColor(debug_img, cv2.COLOR_BGR2GRAY)
 
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-    axis = np.float32([[0.5, 0, 0], [0, 0.5, 0], [0, 0, 0.5]]).reshape(-1, 3)
+    axis = np.float32([[s*cols, 0, 0], [0, s*rows, 0],
+                       [0, 0, 0.5]]).reshape(-1, 3)
 
     ret, corners = cv2.findChessboardCorners(
         gray, (cols, rows), None, cv2.CALIB_CB_FILTER_QUADS)
     cv2.drawChessboardCorners(debug_img, (cols, rows), corners, ret)
     cv2.imshow('PreRefinement', debug_img)
+
+    if ret == False:
+        print 'yikes!'
+        cv2.waitKey(-1)
+        return
 
     if ret == True:
         if K is None:
@@ -307,8 +320,12 @@ def got_tuple(img_msg, cam_odom, board_odom):
             if use_gtsam:
                 body_to_board = np.dot(
                     np.linalg.inv(board_to_world), body_to_world)
-                calibrator.add_measurement(body_to_board.astype(
-                    np.float), corners2.astype(np.float))
+                # calibrator.add_measurement(body_to_board.astype(
+                #     np.float), corners2.astype(np.float))
+                # calibrator.add_measurement(body_to_world.astype(
+                #     np.float), corners2.astype(np.float))
+                calibrator.add_measurement(
+                    body_to_world, board_to_world, corners2.astype(np.float))
 
             if visualize:
                 cv2.drawChessboardCorners(
@@ -408,7 +425,7 @@ if __name__ == "__main__":
     subs.append(Subscriber(topics_to_parse[0], Image))
     subs.append(Subscriber(topics_to_parse[1], Odometry))
     subs.append(Subscriber(topics_to_parse[2], Odometry))
-    synchronizer = ApproximateTimeSynchronizer(subs, 1, 0.05)
+    synchronizer = ApproximateTimeSynchronizer(subs, 10, 0.1)
 
     synchronizer.registerCallback(got_tuple)
 
@@ -445,8 +462,57 @@ if __name__ == "__main__":
         if use_gtsam:
             t_in_board = np.eye(4)
             cam_to_body = np.eye(4)
-            calibrator.solve(cam_to_body, t_in_board)
-            body_to_cam = np.linalg.inv(cam_to_body)
+            landmark_pts = np.zeros((rows*cols, 3))
+            cam_poses = np.zeros((len(data_tuples), 16))
+            K_calib = np.zeros((3,3))
+            K_copy = K.copy()
+            dist_coeff = np.array([[0, 0, 0, 0]], dtype=np.float32)
+            points_2d = np.array([t[0] for t in data_tuples])
+            # Uncomment if using distortion
+            # result = cv2.calibrateCamera(np.array([objp]*len(data_tuples)), points_2d.reshape(len(data_tuples), rows*cols, 2), (640, 480), K_copy, dist_coeff, flags=cv2.CALIB_RATIONAL_MODEL)
+
+            result = cv2.calibrateCamera(np.array([objp]*len(data_tuples)), points_2d.reshape(len(data_tuples), rows*cols, 2), (640, 480), K_copy, dist_coeff, flags=cv2.CALIB_ZERO_TANGENT_DIST | cv2.CALIB_USE_INTRINSIC_GUESS | cv2.CALIB_FIX_K1 | cv2.CALIB_FIX_K2 | cv2.CALIB_FIX_K3)
+
+            calibrator.solve(cam_to_body, t_in_board, cam_poses, landmark_pts, K_calib)
+            print 'In python K is '
+            print K_calib
+            if not np.allclose(K_calib , np.zeros((3,3))):
+                K = K_calib
+            K = result[1]
+            dist_coeffs = result[2]
+            for i in range(len(data_tuples)):
+                # Send tf frame
+                pose = cam_poses[i].reshape(4, 4).T
+                broadcaster.sendTransform(
+                    pose[:3, 3],
+                    tf.transformations.quaternion_from_matrix(pose),
+                    rospy.Time.now(),
+                    'x'+str(i),
+                    "board")
+
+            broadcaster.sendTransform(
+                cam_to_body[:3, 3],
+                tf.transformations.quaternion_from_matrix(cam_to_body),
+                rospy.Time.now(),
+                'cam',
+                "body")
+
+            marker = Marker()
+            marker.header.frame_id = 'board'
+            marker.id = 0
+            marker.type = marker.POINTS
+            marker.action = marker.ADD
+            marker.color.a = 1.0
+            marker.color.r = 1.0
+            marker.color.g = 0.0
+            marker.color.b = 0.0
+            marker.scale.x = 0.01
+            marker.scale.y = 0.01
+            for i in range(rows*cols):
+                marker.points.append(
+                    Point(landmark_pts[i, 0], landmark_pts[i, 1], landmark_pts[i, 2]))
+            marker_pub.publish(marker)
+            pdb.set_trace()
         else:
             # Try to use a black box optimizer
             print 'Starting optimization...'
@@ -530,23 +596,15 @@ if __name__ == "__main__":
         error = 0
 
         for measurement, body_to_world, board_to_world, tag_in_cam in data_tuples:
-            board_in_body = np.dot(np.linalg.inv(
-                body_to_world), board_to_world)
-            board_in_cam = np.dot(body_to_cam, board_in_body)
-            tag_in_cam = np.dot(board_in_cam, t_in_board)
-            tag_pts_in_cam = np.dot(tag_in_cam, tag_pts)
+            cam_to_board = np.dot( np.linalg.inv(board_to_world) ,np.dot(body_to_world, cam_to_body))
+            landmark_pts_in_cam = np.dot( np.linalg.inv(cam_to_board), np.concatenate((landmark_pts, np.ones((rows*cols,1))), axis=1).T)
+            # projections = np.dot(K, landmark_pts_in_cam[:3,:])
+            # projections /= projections[2, :]
+            # projections = projections[:2, :].T
 
-            # projections, jac = cv2.projectPoints(
-            #     tag_pts_in_body.T[:, :3], np.array([0.0,0,0]), np.array([0.0,0,0]), K, np.zeros((1, 4)))
-            # pdb.set_trace()
-
-            # projections.shape = (projections.shape[0], projections.shape[-1])
-            # projections = projections.astype(np.float32)
-
-            projections = np.dot(K, tag_pts_in_cam[:3, :])
-            projections /= projections[2, :]
-            projections = projections[:2, :].T
-
+            projections, jac = cv2.projectPoints(
+                landmark_pts_in_cam.T[:, :3], np.zeros((3,1)), np.zeros((3,1)) , K, dist_coeffs)
+            projections.shape = (projections.shape[0], projections.shape[-1])
             debug_img = img_tuples[i]
             error += (np.sqrt(np.sum((measurement - projections)**2, axis=1))).sum()
 
@@ -575,16 +633,16 @@ if __name__ == "__main__":
             debug_img = cv2.line(debug_img, tuple(projections[:2, 3]), tuple(
                 projections[:2, 2]), (127, 0, 0), 1)
 
-            origin_in_cam = np.dot(board_in_cam, pts)
-            projections = np.dot(K, origin_in_cam[:3, :])
-            projections /= projections[2]
-            projections = projections.astype(np.float32)
-            debug_img = cv2.line(debug_img, tuple(projections[:2, 3]), tuple(
-                projections[:2, 0]), (0, 0, 127), 1)
-            debug_img = cv2.line(debug_img, tuple(projections[:2, 3]), tuple(
-                projections[:2, 1]), (0, 127, 0), 1)
-            debug_img = cv2.line(debug_img, tuple(projections[:2, 3]), tuple(
-                projections[:2, 2]), (127, 0, 0), 1)
+            # origin_in_cam = np.dot(board_in_cam, pts)
+            # projections = np.dot(K, origin_in_cam[:3, :])
+            # projections /= projections[2]
+            # projections = projections.astype(np.float32)
+            # debug_img = cv2.line(debug_img, tuple(projections[:2, 3]), tuple(
+            #     projections[:2, 0]), (0, 0, 127), 1)
+            # debug_img = cv2.line(debug_img, tuple(projections[:2, 3]), tuple(
+            #     projections[:2, 1]), (0, 127, 0), 1)
+            # debug_img = cv2.line(debug_img, tuple(projections[:2, 3]), tuple(
+            #     projections[:2, 2]), (127, 0, 0), 1)
 
             cv2.imshow('Validation ({0}/{1})'.format(i,
                                                      len(data_tuples)-1), debug_img)
