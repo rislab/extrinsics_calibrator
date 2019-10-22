@@ -108,6 +108,12 @@ void CheckerboardExtrinsicCalibration::addMeasurement(const Eigen::MatrixXd &bod
   if (!init_) {
     // Add the symbol for the extrinsics
     initial_.insert(gtsam::Symbol('t', 0), extrinsics_guess_);
+    // Add the noise prior
+    graph_.add(
+        gtsam::PriorFactor<gtsam::Pose3>(
+            gtsam::Symbol('t', 0),
+            extrinsics_guess_,
+            extrinsics_noise_));
 
 #ifdef TREAT_CHECKERBOARD_CORNERS_INDEPENDENTLY
     // IF TREATING EACH CORNER INDEPENDENTLY
@@ -124,15 +130,14 @@ void CheckerboardExtrinsicCalibration::addMeasurement(const Eigen::MatrixXd &bod
         // Transform to world frame
         gtsam::Point3 corner_in_board = (tag_in_board * corner.homogeneous()).head<3>();
         // if (i == 0 && j == 0) {
-        // Add a prior factor for the first landmark
-        // graph_.add(
-        //     gtsam::PriorFactor<gtsam::Point3>(
-        //         gtsam::Symbol('l', i * params_.cols + j), corner_in_board, landmark_noise_));
+        //Add a prior factor for the landmark
+        graph_.add(
+            gtsam::PriorFactor<gtsam::Point3>(
+                gtsam::Symbol('l', i * params_.cols + j), corner_in_board, landmark_noise_));
         // }
         // Also add tight between factors between this point and the others
-        gtsam::noiseModel::Diagonal::shared_ptr checkerboard_noise =
-            gtsam::noiseModel::Isotropic::Sigma(3, 0.001);
-
+        // gtsam::noiseModel::Diagonal::shared_ptr checkerboard_noise =
+        //     gtsam::noiseModel::Isotropic::Sigma(3, 0.001);
         // for (int v = 0; v < params_.rows; ++v) {
         //   for (int u = 0; u < params_.cols; ++u) {
         //     if (u != j && v != i && (v * params_.cols + u > i * params_.cols + j)) {
@@ -180,7 +185,7 @@ void CheckerboardExtrinsicCalibration::addMeasurement(const Eigen::MatrixXd &bod
   }
   // Alright, measurements of the same landmarks again! Add them in!
   initial_.insert(gtsam::Symbol('x', num_poses_), gtsam::Pose3(board_to_world.inverse() * body_to_world));
-  // Since these are coming via mocap, let's put some string unary priors as well
+  // Since these are coming via mocap, let's put some strong unary priors as well
   graph_.add(
       gtsam::PriorFactor<gtsam::Pose3>(
           gtsam::Symbol('x', num_poses_),
@@ -265,7 +270,7 @@ void CheckerboardExtrinsicCalibration::solve(Eigen::Ref<MRow> cam_to_body, Eigen
   gtsam::Pose3 cam_to_body_pose = result.at(gtsam::Symbol('t', 0)).cast<gtsam::Pose3>();
   cam_to_body = cam_to_body_pose.matrix();
   // Also print the evaluate error at first factor?
-  graph_.printErrors(result);
+  // graph_.printErrors(result);
 #ifdef TREAT_CHECKERBOARD_CORNERS_INDEPENDENTLY
   for (int i = 0; i < params_.rows * params_.cols; ++i) {
     landmarks.row(i) = result.at(gtsam::Symbol('l', i)).cast<gtsam::Point3>();
@@ -274,9 +279,9 @@ void CheckerboardExtrinsicCalibration::solve(Eigen::Ref<MRow> cam_to_body, Eigen
     gtsam::Pose3 cam_pose = result.at(gtsam::Symbol('x', i)).cast<gtsam::Pose3>();
 
     cam_poses.row(i) = Eigen::Map<MRow>(cam_pose.matrix().data(), 1, 16);
-    if (i == 0) {
-      std::cout << " cam_pose ::\n " << cam_pose << "\n row is " << cam_to_body.row(i) << "\n";
-    }
+    // if (i == 0) {
+    //   std::cout << " cam_pose ::\n " << cam_pose << "\n row is " << cam_to_body.row(i) << "\n";
+    // }
   }
 #else
   gtsam::Pose3 tag_to_board_pose = result.at(gtsam::Symbol('l', 0)).cast<gtsam::Pose3>();

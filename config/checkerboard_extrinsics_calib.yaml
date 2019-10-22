@@ -1,12 +1,12 @@
 extrinsics_calib_params:
   odom_noise: [0.001, 0.001, 0.001, 0.001, 0.001, 0.001] #Noises, rotations in radians, then translations in m
-  landmark_noise: [0.001, 0.001, 0.001, 0.01, 0.01, 0.01]
+  landmark_noise: [0.01, 0.01, 0.01, 0.1, 0.1, 0.1]
   intrinsics_noise: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-  extrinsics_noise: [0.5,0.5,0.5, 0.5,0.5,0.5]
+  extrinsics_noise: [0.5,0.5,0.5, 1.0,1.0,1.0]
   # intrinsics_guess: [618.2333, 618.1694, 0.0, 325.8005, 241.9427] #fx, fy, skew, cx, cy
   intrinsics_guess: [607.70, 607.546, 0.0, 326.857, 243.5087] #fx, fy, skew, cx, cy
   # intrinsics_guess: [617.3275, 617.7238, 331.6004, 242.0712, 0.0013, 0.0025, 3.129, 72.5871, -174.2246, 3.1472, 70.6875, -169.8187] #fx, fy, cx, cy, p1, p2, k1, k2, k3, k4, k5, k6
-  extrinsics_guess: [1,0,0,0,  0,1,0,0, 0,0,1,0, 0,0,0,1]
+  extrinsics_guess: [1,0,0,0.0,  0,1,0,0.00, 0,0,1,0.00, 0,0,0,1]
   # extrinsics_guess: [0,0,1,0.08, -1,0,0,0.06, 0,-1,0,-0.12, 0, 0, 0, 1]
   measurement_noise: 2 #Noise in pixels of a detected tag corner
   full_mode: false

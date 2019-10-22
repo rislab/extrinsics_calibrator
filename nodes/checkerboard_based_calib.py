@@ -416,10 +416,10 @@ if __name__ == "__main__":
 
     if cam == 'kinect':
         topics_to_parse = ['/kinect2/qhd/image_color_rect',
-                           '/kinect_one/vicon_odom', checkerboard_topic, '/kinect2/qhd/camera_info']
+                           '/kinect_one_new/vicon_odom', checkerboard_topic, '/kinect2/qhd/camera_info']
     elif cam == 'realsense':
         topics_to_parse = ['/camera/color/image_raw',
-                           '/realsense_rig/vicon_odom', checkerboard_topic, '/camera/color/camera_info']
+                           '/realsense_rig_new/vicon_odom', checkerboard_topic, '/camera/color/camera_info']
 
     subs = []
     subs.append(Subscriber(topics_to_parse[0], Image))

@@ -1,0 +1,22 @@
+<?xml version="1.0" ?>
+<sdf version="1.4">
+  <!-- We use a custom world for the rrbot so that the camera angle is launched correctly -->
+
+  <world name="checkerboard_world">
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <!-- Global light source -->
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <include>
+      <uri>model://checkerboard_5_7_0_08</uri>
+      <pose>0.5 0 0.5 0.0 1.5 3.14</pose>
+    </include>
+
+
+  </world>
+</sdf>

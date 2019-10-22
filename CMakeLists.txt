@@ -87,3 +87,10 @@ install(DIRECTORY launch/
 install(DIRECTORY config/
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config
   PATTERN ".svn" EXCLUDE)
+
+install(DIRECTORY urdf DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
+
+# Also install the gazebo model to the local gazebo folder install(DIRECTORY
+install(DIRECTORY models/ DESTINATION $ENV{HOME}/.gazebo/models/${PROJECT_NAME})
+
+install(DIRECTORY worlds DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
