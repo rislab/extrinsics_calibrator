@@ -59,7 +59,7 @@ np.set_printoptions(precision=4, suppress=True)
 # path = '/media/icoderaven/SHENEXTDRIVE/calib_data/extrinsics_calib/ext_calib_kinect_small_board.bag'
 # path = '/media/icoderaven/958c5fed-c873-4414-9ed4-c0662983e711/3dv_data/ext_calib_kinect_big_board.bag'
 # path = '/media/icoderaven/958c5fed-c873-4414-9ed4-c0662983e711/3dv_data/icra20/ext_calib_realsense_new_small_board.bag'
-path = '/home/icoderaven/ext_calib_realsense_new_small_board.bag'
+path = '/media/icoderaven/Dumps/bagfiles/ext_calib_realsense_new_small_board.bag'
 big_board_params = {}
 big_board_params['s'] = 0.13
 big_board_params['rows'] = 6

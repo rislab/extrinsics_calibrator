@@ -15,7 +15,10 @@ from gazebo_msgs.srv import SetLinkState, GetLinkState
 from geometry_msgs.msg import Pose
 from sensor_msgs.msg import Image
 
+import matplotlib.pyplot as plt
+
 from extrinsics_calibrator.ExtrinsicCalibPyModules import CheckerboardExtrinsicCalibration
+np.set_printoptions(precision=2, suppress=True)
 
 
 def transform_matrix_from_odom(msg):
@@ -89,7 +92,7 @@ def rgb_img_callback(msg):
 
 # Read the config file and populate params
 config_file = '../config/checkerboard_extrinsics_calib.yaml'
-visualise = True
+visualise = False
 
 with open('../config/checkerboard_extrinsics_calib.yaml', 'r') as f:
     file_dict = yaml.load(f)
@@ -133,7 +136,7 @@ while not success:
 
 # Create measurements from a bunch of different poses
 # For now just use the same poses as from the bag file
-bag_path = '/home/icoderaven/ext_calib_realsense_new_small_board.bag'
+bag_path = '/media/icoderaven/Dumps/bagfiles/ext_calib_realsense_new_small_board.bag'
 odom_topic = '/realsense_rig_new/vicon_odom'
 img_topic = '/camera/color/image_raw'
 rospy.init_node('test_checkerboard')
@@ -149,48 +152,50 @@ with rosbag.Bag(bag_path, 'r') as bag:
             actual_images.append(bridge.imgmsg_to_cv2(msg, 'bgr8'))
 
 # Visualise test
-import matplotlib.pyplot as plt
-cam_to_body_init = np.array([[0.9512, -0.2919, -0.0999, -0.0742],
-                             [0.277,  0.9506, -0.1402, -0.0349],
-                             [0.1359,  0.1057,  0.9851,  0.0826],
-                             [0.,  0.,  0.,  1.]])
-cam_body_odoms = np.dot(gt_body_odoms, cam_to_body_init)
-generate_images(cam_body_odoms)
-l = len(actual_images)
-f, axes = plt.subplots(4, l/2)
-for i in range(l/2):
-    axes[0, i].imshow(actual_images[i])
-    axes[1, i].imshow(images[i])
-    axes[2, i].imshow(actual_images[i+l/2])
-    axes[3, i].imshow(images[i+l/2])
-plt.show()
+if visualise:
+    cam_to_body_init = np.array([[0.9536, -0.2834, -0.1016, -0.0764],
+                                 [0.2692,  0.9538, -0.1334, -0.052],
+                                 [0.1347,  0.0999,  0.9858,  0.0483],
+                                 [0.,  0.,  0.,  1.]])
+    cam_body_odoms = np.dot(gt_body_odoms, cam_to_body_init)
+    generate_images(cam_body_odoms)
+    l = len(actual_images)
+    f, axes = plt.subplots(4, l/2)
+    for i in range(l/2):
+        axes[0, i].imshow(actual_images[i])
+        axes[1, i].imshow(images[i])
+        axes[2, i].imshow(actual_images[i+l/2])
+        axes[3, i].imshow(images[i+l/2])
+    plt.show()
 
 # See if we can obtain the extrinsics to a high degree of accuracy
 # with increasing amount of deviation from identity
 
 deviation_norms = np.linspace(0.0, 1.0, 11)
-tag_board_deviation_norms = [0.0]  # , 0.01, 0.05, 0.1]
-num_eval_per_deviation = 10
-
+tag_board_deviation_norms = [0.0, 0.01, 0.05, 0.1]
+num_eval_per_deviation = 100
+error_thresh = 1e-3
 successful_calibs = []
+all_errors = []
 for dev_id, deviation_norm in enumerate(deviation_norms):
     successful_calibs.append([])
+    errors = []
 
     tag_in_board_base = np.array(
         [[0.0, 1, 0, 0], [1, 0, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
     for tag_norm in tag_board_deviation_norms:
         correct_extrinsics_found = []
-        # Generate a random vector in tangent space with norm == deviation_norm
-        tag_tangent_vector = np.random.rand(6)
-        tag_tangent_vector *= tag_norm / np.linalg.norm(tag_tangent_vector)
-        # Now generate the equivalent SE3 group from this vector
-        tag_board_deviation = SE3.group_from_algebra(
-            se3.algebra_from_vector(tag_tangent_vector))
-        tag_board_deviation = np.eye(4)
-        tag_board_deviation[2, 3] = tag_norm
-        tag_in_board = np.dot(tag_in_board_base, tag_board_deviation)
 
         for eval_id in range(num_eval_per_deviation):
+            # Generate a random vector in tangent space with norm == deviation_norm
+            tag_tangent_vector = np.random.rand(6)
+            tag_tangent_vector *= tag_norm / np.linalg.norm(tag_tangent_vector)
+            # Now generate the equivalent SE3 group from this vector
+            tag_board_deviation = SE3.group_from_algebra(
+                se3.algebra_from_vector(tag_tangent_vector))
+            # tag_board_deviation = np.eye(4)
+            # tag_board_deviation[2, 3] = tag_norm
+            tag_in_board = np.dot(tag_in_board_base, tag_board_deviation)
             # Initialise a ground truth cam_to_body offset
             cam_to_body_gt = np.eye(4)
             # Generate a random vector in tangent space with norm == deviation_norm
@@ -225,8 +230,12 @@ for dev_id, deviation_norm in enumerate(deviation_norms):
 
             calibrator.solve(cam_to_body, t_in_board,
                              body_poses_in_board, landmark_pts, K_calib)
-            correct_extrinsics_found.append(np.allclose(
-                cam_to_body_gt, cam_to_body, atol=0.5*1e-4))
+
+            delta = np.dot(np.linalg.inv(cam_to_body), cam_to_body_gt)
+            delta_norm = np.linalg.norm(
+                se3.vector_from_algebra(SE3.algebra_from_group(delta)))
+
+            correct_extrinsics_found.append(delta_norm)
 
             if visualise:
                 cam_odoms = [np.dot(gt_body_odom, cam_to_body)
@@ -235,17 +244,39 @@ for dev_id, deviation_norm in enumerate(deviation_norms):
                     board_gt_pose, tag_in_board, tag_pts, cam_odoms)
 
         successful_calibs[dev_id].append(
-            1.0*np.count_nonzero(correct_extrinsics_found)/num_eval_per_deviation)
-fig = plt.figure('ExtrinsicsValidator')
+            [np.mean(correct_extrinsics_found),
+             np.std(correct_extrinsics_found),
+             1.0*np.count_nonzero([delta <= error_thresh for delta in correct_extrinsics_found])/num_eval_per_deviation])
+
+successful_calibs = np.array(successful_calibs)
+np.save('successful_calbs.npy', successful_calibs)
+fig, axes = plt.subplots(1, 2)
+
 successful_calibs = np.array(successful_calibs)
 for i in range(len(tag_board_deviation_norms)):
-    plt.plot(deviation_norms, successful_calibs[:, i], label=str(
+    axes[0].plot(deviation_norms, successful_calibs[:, i, 2], label=str(
         tag_board_deviation_norms[i]))
-plt.title('Successful Extrinsic Calibration Found')
-plt.legend()
-plt.xlabel('Extrinsic norm')
-plt.ylabel('Success Ratio')
-plt.grid(True)
+
+    axes[1].plot(deviation_norms, successful_calibs[:, i, 0], label=str(
+        tag_board_deviation_norms[i]))
+    axes[1].fill_between(
+        deviation_norms,
+        successful_calibs[:, i, 0],
+        successful_calibs[:, i, 0] + successful_calibs[:, i, 1],
+        alpha=0.2, antialiased=True)
+
+axes[0].set_title('Error $ < '+str(float(error_thresh))+'$')
+axes[1].set_title('Error Norm')
+
+axes[0].legend(title='Tag Offset Norm')
+axes[1].legend(title='Tag Offset Norm')
+axes[1].set_yscale('log', nonposy='clip')
+axes[0].set_xlabel('Extrinsic norm')
+axes[1].set_xlabel('Extrinsic norm')
+axes[0].set_ylabel('Success Ratio')
+axes[1].set_ylabel('Error Norm')
+axes[0].grid(True)
+axes[1].grid(True)
 plt.tight_layout()
 plt.show()
 pdb.set_trace()

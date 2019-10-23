@@ -63,7 +63,7 @@ void CheckerboardExtrinsicCalibration::readConfig(const std::string &params_file
 
       YAML::Node landmark_noise_node = extrinsics_calib_node["landmark_noise"];
       if (landmark_noise_node) {
-#ifdef TREAT_CHECKERBOARD_CORNERS_INDEPENDENTLY
+#if TREAT_CHECKERBOARD_CORNERS_INDEPENDENTLY
         for (int i = 0; i < 3; i++) {
 #else
         for (int i = 0; i < 6; i++) {
@@ -115,7 +115,7 @@ void CheckerboardExtrinsicCalibration::addMeasurement(const Eigen::MatrixXd &bod
             extrinsics_guess_,
             extrinsics_noise_));
 
-#ifdef TREAT_CHECKERBOARD_CORNERS_INDEPENDENTLY
+#if TREAT_CHECKERBOARD_CORNERS_INDEPENDENTLY
     // IF TREATING EACH CORNER INDEPENDENTLY
     // Add a reasonable initial estimate for all the checkerboard corners
     for (int i = 0; i < params_.rows; ++i) {
@@ -167,12 +167,12 @@ void CheckerboardExtrinsicCalibration::addMeasurement(const Eigen::MatrixXd &bod
         0, 0, 0, 1;
 
     initial_.insert(gtsam::Symbol('l', 0), gtsam::Pose3(tag_in_board));
-    // // Also, since we're reasonably sure of this transformation
-    // graph_.add(
-    //     gtsam::PriorFactor<gtsam::Pose3>(
-    //         gtsam::Symbol('l', 0),
-    //         gtsam::Pose3(tag_in_board),
-    //         landmark_noise_));
+    // Also, add noise on prior
+    graph_.add(
+        gtsam::PriorFactor<gtsam::Pose3>(
+            gtsam::Symbol('l', 0),
+            gtsam::Pose3(tag_in_board),
+            landmark_noise_));
 #endif
     // TODO: Add a prior for the first pose?
     // If we're in full mode, add a prior for K
@@ -193,7 +193,7 @@ void CheckerboardExtrinsicCalibration::addMeasurement(const Eigen::MatrixXd &bod
           odom_noise_));
   switch (params_.mode) {
     case EXTRINSICS_ONLY: {
-#ifdef TREAT_CHECKERBOARD_CORNERS_INDEPENDENTLY
+#if TREAT_CHECKERBOARD_CORNERS_INDEPENDENTLY
       for (int i = 0; i < measurements.rows(); ++i) {
         graph_.add(
             gtsam::ProjectionFactorPPP<gtsam::Pose3, gtsam::Point3, gtsam::CAM_TYPE>(
@@ -224,7 +224,7 @@ void CheckerboardExtrinsicCalibration::addMeasurement(const Eigen::MatrixXd &bod
       break;
     }
     case FULL: {
-#ifdef TREAT_CHECKERBOARD_CORNERS_INDEPENDENTLY
+#if TREAT_CHECKERBOARD_CORNERS_INDEPENDENTLY
       for (int i = 0; i < measurements.rows(); ++i) {
         graph_.add(
             gtsam::ProjectionFactorPPPC<gtsam::Pose3, gtsam::Point3, gtsam::CAM_TYPE>(
@@ -258,45 +258,47 @@ void CheckerboardExtrinsicCalibration::addMeasurement(const Eigen::MatrixXd &bod
   ++num_poses_;
 }
 
-void CheckerboardExtrinsicCalibration::solve(Eigen::Ref<MRow> cam_to_body, Eigen::Ref<MRow> tag_to_board, Eigen::Ref<MRow> cam_poses, Eigen::Ref<MRow> landmarks, Eigen::Ref<MRow> K) {
+void CheckerboardExtrinsicCalibration::solve(Eigen::Ref<MRow> cam_to_body, Eigen::Ref<MRow> tag_to_board, Eigen::Ref<MRow> body_poses, Eigen::Ref<MRow> landmarks, Eigen::Ref<MRow> K) {
   gtsam::LevenbergMarquardtOptimizer optimizer(graph_, initial_);
-  {
-    std::ofstream os("test.dot");
-    graph_.saveGraph(os, initial_);
-  }
+  // {
+  //   std::ofstream os("test.dot");
+  //   graph_.saveGraph(os, initial_);
+  // }
   gtsam::Values result = optimizer.optimize();
-  result.print("Final Result:\n");
+  // result.print("Final Result:\n");
 
   gtsam::Pose3 cam_to_body_pose = result.at(gtsam::Symbol('t', 0)).cast<gtsam::Pose3>();
   cam_to_body = cam_to_body_pose.matrix();
   // Also print the evaluate error at first factor?
   // graph_.printErrors(result);
-#ifdef TREAT_CHECKERBOARD_CORNERS_INDEPENDENTLY
+  for (int i = 0; i < num_poses_; ++i) {
+    gtsam::Pose3 body_pose = result.at(gtsam::Symbol('x', i)).cast<gtsam::Pose3>();
+    body_poses.row(i) = Eigen::Map<MRow>(body_pose.matrix().data(), 1, 16);
+  }
+#if TREAT_CHECKERBOARD_CORNERS_INDEPENDENTLY
   for (int i = 0; i < params_.rows * params_.cols; ++i) {
     landmarks.row(i) = result.at(gtsam::Symbol('l', i)).cast<gtsam::Point3>();
-  }
-  for (int i = 0; i < num_poses_; ++i) {
-    gtsam::Pose3 cam_pose = result.at(gtsam::Symbol('x', i)).cast<gtsam::Pose3>();
-
-    cam_poses.row(i) = Eigen::Map<MRow>(cam_pose.matrix().data(), 1, 16);
-    // if (i == 0) {
-    //   std::cout << " cam_pose ::\n " << cam_pose << "\n row is " << cam_to_body.row(i) << "\n";
-    // }
   }
 #else
   gtsam::Pose3 tag_to_board_pose = result.at(gtsam::Symbol('l', 0)).cast<gtsam::Pose3>();
   tag_to_board = tag_to_board_pose.matrix();
+  for (int i = 0; i < params_.rows; ++i) {
+    for (int j = 0; j < params_.cols; ++j) {
+      gtsam::Point3 corner(j * params_.s, i * params_.s, 0.0f);
+      landmarks.row(i * params_.cols + j) = (tag_to_board * corner.homogeneous()).head<3>();
+    }
+  }
 #endif
   if (params_.mode == FULL) {
     K = result.at(gtsam::Symbol('k', 0)).cast<gtsam::CAM_TYPE>().K();
-    std::cout << "Solved K was \n"
-              << K;
+    // std::cout << "Solved K was \n"
+    //           << K;
 #if USE_DISTORTION
     std::cout << "solved distortion params were \n"
               << result.at(gtsam::Symbol('k', 0)).cast<gtsam::CAM_TYPE>().k();
 #endif
   }
-  std::cout << " K was \n"
-            << *intrinsics_guess_ << "\n";
+  // std::cout << " K was \n"
+  //           << *intrinsics_guess_ << "\n";
   printf("\n\nError before optimisation::%f Error after optimisation::%f\n", graph_.error(initial_), graph_.error(result));
 }
