@@ -17,10 +17,11 @@ from pynput.keyboard import Key, Listener
 
 
 class Synchronize:
-    def __init__(self, topics, out_filename):
+    def __init__(self, topics, topic_types, out_filename):
         self.subs = []
         self.out_bag = rosbag.Bag(out_filename, "w")
         self.topics = topics
+        self.topic_types = topic_types
         self.bridge = CvBridge()
         self.data_count = 0
         self.latest_sync_tuple = []
@@ -28,24 +29,9 @@ class Synchronize:
         self.init_sub()
 
     def spin(self):
-        rospy.Subscriber(self.topics[0], Image,
-                         lambda msg: self.subs[0].signalMessage(msg))
-        rospy.Subscriber(self.topics[1], Odometry,
-                         lambda msg: self.subs[1].signalMessage(msg))
-        rospy.Subscriber(self.topics[2], Odometry,
-                         lambda msg: self.subs[2].signalMessage(msg))
-        rospy.Subscriber(self.topics[3], Image,
-                         lambda msg: self.subs[3].signalMessage(msg))
-        rospy.Subscriber(self.topics[4], CameraInfo,
-                         lambda msg: self.subs[4].signalMessage(msg))
-        # rospy.Subscriber(self.topics[5], Image,
-        #                 lambda msg: self.subs[5].signalMessage(msg))
-        # rospy.Subscriber(self.topics[6], Image,
-        #                 lambda msg: self.subs[6].signalMessage(msg))
-        # rospy.Subscriber(self.topics[7], CameraInfo,
-        #                 lambda msg: self.subs[7].signalMessage(msg))
-        # rospy.Subscriber(self.topics[8], Odometry,
-        #                 lambda msg: self.subs[8].signalMessage(msg))
+        for i in range(len(self.topics)):
+            rospy.Subscriber(self.topics[i], self.topic_types[i],
+                             lambda msg: self.subs[i].signalMessage(msg), tcp_nodelay=True)
 
         self.kb_listener = Listener(on_release=self.on_release)
         self.kb_listener.start()
@@ -71,66 +57,47 @@ class Synchronize:
             print 'saving'+str(self.data_count)
             for idx, topic in enumerate(self.topics):
                 self.out_bag.write(
-                    topic, self.latest_sync_tuple[idx], self.latest_sync_tuple[0].header.stamp)
-            # self.out_bag.write(
-            #    self.topics[0], self.latest_sync_tuple[0], self.latest_sync_tuple[0].header.stamp)
-            # self.out_bag.write(
-            #    self.topics[1], self.latest_sync_tuple[1], self.latest_sync_tuple[0].header.stamp) #self.out_bag.write(
-            #    self.topics[2], self.latest_sync_tuple[2], self.latest_sync_tuple[0].header.stamp)
-            # self.out_bag.write(
-            #    self.topics[3], self.latest_sync_tuple[3], self.latest_sync_tuple[0].header.stamp)
-            # self.out_bag.write(
-            #    self.topics[4], self.latest_sync_tuple[4], self.latest_sync_tuple[0].header.stamp)
-            # self.out_bag.write(
-            #    self.topics[5], self.latest_sync_tuple[5], self.latest_sync_tuple[0].header.stamp)
-            # self.out_bag.write(
-            #    self.topics[6], self.latest_sync_tuple[6], self.latest_sync_tuple[0].header.stamp)
-            # self.out_bag.write(
-            #    self.topics[7], self.latest_sync_tuple[7], self.latest_sync_tuple[0].header.stamp)
-            # self.out_bag.write(
-            #    self.topics[8], self.latest_sync_tuple[8], self.latest_sync_tuple[0].header.stamp)
+                    topic, self.latest_sync_tuple[idx], self.latest_sync_tuple[idx].header.stamp)
             self.updated = False
             self.data_count += 1
 
     # def callback(self, img_msg, kinect_odom_msg, tag_odom_msg, depth_img_msg, kinect_camera_info, rs_depth_msg, rs_color_msg, rs_camera_info, rs_odom):
-    def callback(self, img_msg, kinect_odom_msg, tag_odom_msg, depth_img_msg, kinect_camera_info):
-            # print 'asdasd'
-        cv_img = self.bridge.imgmsg_to_cv2(img_msg, 'passthrough')
+    # img_msg, kinect_odom_msg, tag_odom_msg, depth_img_msg, kinect_camera_info):
+    def callback(self, *args):
+        sync_tuple = []
+        # for i,msg in enumerate(args):
+        #     if self.topic_types[i] == Image:
+        #         cv_img = self.bridge.imgmsg_to_cv2(msg, 'passthrough')
+
         # cv2.imshow("color_img", cv_img)
         # cv2.waitKey(20)
-        # self.latest_sync_tuple = [
-        #    img_msg, kinect_odom_msg, tag_odom_msg, depth_img_msg, kinect_camera_info, rs_depth_msg, rs_color_msg, rs_camera_info, rs_odom]
-        self.latest_sync_tuple = [img_msg, kinect_odom_msg,
-                                  tag_odom_msg, depth_img_msg, kinect_camera_info]
+        self.latest_sync_tuple = args
         self.updated = True
 
     def init_sub(self):
         self.subs = []
-        self.subs.append(Subscriber(self.topics[0], Image))
-        self.subs.append(Subscriber(self.topics[1], Odometry))
-        self.subs.append(Subscriber(self.topics[2], Odometry))
-        self.subs.append(Subscriber(self.topics[3], Image))
-
-        self.subs.append(Subscriber(self.topics[4], CameraInfo))
-        #self.subs.append(Subscriber(self.topics[5], Image))
-        #self.subs.append(Subscriber(self.topics[6], Image))
-        #self.subs.append(Subscriber(self.topics[7], CameraInfo))
-        #self.subs.append(Subscriber(self.topics[8], Odometry))
-        self.synchronizer = ApproximateTimeSynchronizer(self.subs, 1, 0.1)
+        for i in range(len(self.topics)):
+            self.subs.append(Subscriber(self.topics[i], self.topic_types[i]))
+        self.synchronizer = ApproximateTimeSynchronizer(self.subs, 10, 0.1)
 
         self.synchronizer.registerCallback(self.callback)
 
 
 def main():
     rospy.init_node("kinect_sync_node")
-    # topics_to_parse = ['/kinect2/qhd/image_color_rect',
-    #                   '/kinect_one/vicon_odom', '/small_checkerboard/vicon_odom', '/kinect2/qhd/image_depth_rect', '/kinect2/qhd/camera_info', '/camera/aligned_depth_to_color/image_raw', '/camera/color/image_raw', '/camera/color/camera_info', '/realsense_rig/vicon_odom']
-    topics_to_parse = ['/kinect2/qhd/image_color_rect',
-                       '/kinect_one/vicon_odom', '/checkerboard/vicon_odom',
-                       '/kinect2/qhd/image_depth_rect', '/kinect2/qhd/camera_info']
-    filename = "/home/aditya/bagfiles/kinect_one/ext_calib_kinect_big_board.bag"
+    topics_to_parse = ['/camera/infra1/image_rect_raw',
+                       '/realsense_rig_new/vicon_odom',
+                       '/small_checkerboard/vicon_odom',
+                       '/camera/infra2/image_rect_raw',
+                       '/camera/color/image_raw',
+                       '/camera/infra1/camera_info',
+                       '/camera/infra2/camera_info',
+                       '/camera/color/camera_info']
+    topic_types = [Image, Odometry, Odometry, Image,
+                   Image, CameraInfo, CameraInfo, CameraInfo]
+    filename = "/home/al/bagfiles/ext_calib_small_all.bag"
 
-    sync_obj = Synchronize(topics_to_parse, filename)
+    sync_obj = Synchronize(topics_to_parse, topic_types, filename)
     sync_obj.spin()
     cv2.destroyAllWindows()
 
