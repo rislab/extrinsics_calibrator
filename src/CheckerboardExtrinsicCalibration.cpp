@@ -210,7 +210,7 @@ void CheckerboardExtrinsicCalibration::addMeasurement(const Eigen::MatrixXd &bod
         measurement.push_back(gtsam::Point2(measurements.row(i)));
       }
       graph_.add(
-          gtsam::CheckerboardPoseProjectionFactor<gtsam::Pose3, gtsam::Pose3>(
+          gtsam::CheckerboardPoseProjectionFactor<gtsam::Pose3, gtsam::Pose3, gtsam::CAM_TYPE>(
               measurement,
               measurement_noise_,
               gtsam::Symbol('x', num_poses_),
@@ -236,21 +236,22 @@ void CheckerboardExtrinsicCalibration::addMeasurement(const Eigen::MatrixXd &bod
                 gtsam::Symbol('k', 0)));
       }
 #else
-      std::vector<gtsam::Point2> measurement;
-      for (int i = 0; i < measurements.rows(); ++i) {
-        measurement.push_back(gtsam::Point2(measurements.row(i)));
-      }
-      graph_.add(
-          gtsam::CheckerboardFactorPPPC<gtsam::Pose3, gtsam::Pose3>(
-              measurement,
-              measurement_noise_,
-              gtsam::Symbol('x', num_poses_),
-              gtsam::Symbol('t', 0),
-              gtsam::Symbol('l', 0),
-              gtsam::Symbol('k', 0),
-              params_.rows,
-              params_.cols,
-              params_.s));
+      throw std::runtime_error("Not implemented yet!");
+      // std::vector<gtsam::Point2> measurement;
+      // for (int i = 0; i < measurements.rows(); ++i) {
+      //   measurement.push_back(gtsam::Point2(measurements.row(i)));
+      // }
+      // graph_.add(
+      //     gtsam::CheckerboardFactorPPPC<gtsam::Pose3, gtsam::Pose3, gtsam::CAM_TYPE>(
+      //         measurement,
+      //         measurement_noise_,
+      //         gtsam::Symbol('x', num_poses_),
+      //         gtsam::Symbol('t', 0),
+      //         gtsam::Symbol('l', 0),
+      //         gtsam::Symbol('k', 0),
+      //         params_.rows,
+      //         params_.cols,
+      //         params_.s));
 #endif
       break;
     }

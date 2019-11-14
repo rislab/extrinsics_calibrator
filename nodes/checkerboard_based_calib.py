@@ -74,11 +74,25 @@ cam_types = ['kinect', 'realsense']
 cam = cam_types[1]
 params = small_board_params
 use_gtsam = True
+do_temporal_offset_detection = False
 
 if use_gtsam:
     from extrinsics_calibrator.ExtrinsicCalibPyModules import CheckerboardExtrinsicCalibration
     calibrator = CheckerboardExtrinsicCalibration(
         '../config/checkerboard_extrinsics_calib.yaml')
+
+offset_dt = 0.0
+if do_temporal_offset_detection:
+    offset_found = False
+    offset_running = True
+    buffer_size = 50
+    prev_pnp = np.eye(4)
+    prev_mocap = np.eye(4)
+    sampled_pnp_odom = []
+    sampled_pnp_timestamps = [0.0]
+    sampled_mocap_odom = []
+    sampled_mocap_timestamps = []
+    offset_idx = 0
 
 K = None
 K_msg = None
@@ -124,141 +138,6 @@ def transform_matrix_from_odom(msg):
     return T
 
 
-def cost_function(theta):
-    body_to_c = SE3.group_from_algebra(
-        se3.algebra_from_vector(theta[:6]))
-
-    # tag_in_board_offset = theta[6:]
-    t_in_board = tag_in_board.copy()
-    # t_in_board[:3,3] += tag_in_board_offset
-    # t_in_board = np.dot(t_in_board, SE3.group_from_algebra(
-    # se3.algebra_from_vector(tag_in_board_offset)))
-    error = 0
-    img_count = 0
-    residual_vectors = []
-    for measurement, body_to_world, board_to_world, tag_in_cam in data_tuples:
-        tag_pts_in_world = np.dot(
-            board_to_world, np.dot(t_in_board, tag_pts))
-        tag_pts_in_body = np.dot(np.linalg.inv(
-            body_to_world), tag_pts_in_world)
-        tag_pts_in_cam = np.dot(body_to_c, tag_pts_in_body)
-
-        projections, jac = cv2.projectPoints(
-            tag_pts_in_body.T[:, :3], theta[:3], theta[3:6], K, np.zeros((1, 4)))
-        projections = projections.astype(np.float32)
-
-        # cv2.drawChessboardCorners(debug_img, (rows, cols), projections, True)
-
-        projections.shape = (projections.shape[0], projections.shape[-1])
-        measurement.shape = (measurement.shape[0], measurement.shape[-1])
-
-        if img_count == 0:
-            debug_img = img_tuples[img_count].copy()
-            for i in range(projections.shape[0]):
-                cv2.circle(
-                    debug_img, (projections[i, 0], projections[i, 1]), 2, (255, 0, 0), 1)
-                cv2.circle(
-                    debug_img, (measurement[i, 0], measurement[i, 1]), 2, (0, 0, 255), 1)
-                cv2.line(debug_img, (measurement[i, 0], measurement[i, 1]),
-                         (projections[i, 0], projections[i, 1]), (0, 255, 0))
-            cv2.imshow('cost function img', debug_img)
-            cv2.waitKey(10)
-            # pdb.set_trace()
-
-        img_count += 1
-        error += (np.sqrt(np.sum((measurement - projections)**2, axis=1))).sum()
-        residual_vectors.append((measurement - projections).ravel())
-        # np.linalg.norm(measurement - projections)
-        # error += np.sum((measurement - projections), axis=0)
-    return error  # np.array(residual_vectors).ravel()
-
-
-def jac_function(theta):
-    body_to_c = SE3.group_from_algebra(
-        se3.algebra_from_vector(theta[:6]))
-
-    # tag_in_board_offset = theta[6:]
-    t_in_board = tag_in_board.copy()
-    # t_in_board[:3,3] += tag_in_board_offset
-    # t_in_board = np.dot(t_in_board, SE3.group_from_algebra(
-    # se3.algebra_from_vector(tag_in_board_offset)))
-    error = 0
-    img_count = 0
-    jacs = []
-    for measurement, body_to_world, board_to_world, tag_in_cam in data_tuples:
-        tag_pts_in_world = np.dot(
-            board_to_world, np.dot(t_in_board, tag_pts))
-        tag_pts_in_body = np.dot(np.linalg.inv(
-            body_to_world), tag_pts_in_world)
-        tag_pts_in_cam = np.dot(body_to_c, tag_pts_in_body)
-
-        projections, jac = cv2.projectPoints(
-            tag_pts_in_body.T[:, :3], theta[:3], theta[3:6], K, np.zeros((1, 4)))
-
-        jacs.append(jac[:, :6])
-    return np.vstack(np.array(jacs))
-
-
-def meta_cost_function(t_offset_theta, use_ransac=False):
-    points_3d = []
-    points_2d = []
-
-    delta = np.eye(4)
-    delta[:3, :3] = cv2.Rodrigues(t_offset_theta[:3])[0]
-    delta[:3, 3] = t_offset_theta[3:]
-
-    t_in_board = np.dot(tag_in_board, delta)
-    body_to_cam = np.linalg.inv(cam_to_body)
-    error = 0
-    for measurement, body_to_world, board_to_world, tag_in_cam in data_tuples:
-        board_in_body = np.dot(np.linalg.inv(
-            body_to_world), board_to_world)
-        board_in_cam = np.dot(body_to_cam, board_in_body)
-        tag_in_cam = np.dot(board_in_cam, t_in_board)
-        tag_pts_in_cam = np.dot(tag_in_cam, tag_pts)[:3, :]
-
-        measurement.shape = (measurement.shape[0], measurement.shape[-1])
-
-        points_3d.append(tag_pts_in_cam)
-        points_2d.append(measurement)
-
-    points_3d = np.concatenate(points_3d, axis=1).astype(np.float32).T
-    points_2d = np.concatenate(points_2d, axis=0).astype(np.float32)
-    D = np.array([[0, 0, 0, 0]], dtype=np.float32)
-
-    # Refine K
-    K_copy = K.copy()
-    # result = cv2.calibrateCamera(np.array([objp]*30), points_2d.reshape(30, 42, 2), (960, 540), K_copy, np.array(
-    #     [[0, 0, 0, 0]], dtype=np.float32), flags=cv2.CALIB_USE_INTRINSIC_GUESS)
-    # K_copy = result[1]
-    # D = result[2]
-    if use_ransac:
-        result = cv2.solvePnPRansac(points_3d, points_2d, K_copy, D)
-    else:
-        result = cv2.solvePnP(points_3d, points_2d, K_copy, D)
-    rv = result[1]
-    tv = result[2]
-    error = 0
-    for measurement, body_to_world, board_to_world, tag_in_cam in data_tuples:
-
-        tag_pts_in_world = np.dot(
-            board_to_world, np.dot(t_in_board, tag_pts))
-        tag_pts_in_body = np.dot(np.linalg.inv(
-            body_to_world), tag_pts_in_world)
-        tag_pts_in_body = tag_pts_in_body[:3, :]
-        measurement.shape = (measurement.shape[0], measurement.shape[-1])
-        projections, jac = cv2.projectPoints(
-            tag_pts_in_body.T[:, :3], rv, tv, K, np.zeros((1, 4)))
-        projections.shape = (projections.shape[0], projections.shape[-1])
-
-        error += (np.sqrt(np.sum((measurement - projections)**2, axis=1))).sum()
-
-    return result, error
-
-
-buffer_size = 100
-
-
 def draw(img, corners, imgpts):
     corner = tuple(corners[0].ravel())
     try:
@@ -272,11 +151,24 @@ def draw(img, corners, imgpts):
 
 
 def got_tuple(img_msg, cam_odom, board_odom):
+    global prev_mocap, prev_pnp, sampled_mocap_odom, sampled_pnp_odom, sampled_pnp_timestamps, sampled_mocap_timestamps, offset_idx, offset_dt, offset_found
     img = bridge.imgmsg_to_cv2(img_msg, "bgr8")
     img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
 
     body_to_world = transform_matrix_from_odom(cam_odom)
     board_to_world = transform_matrix_from_odom(board_odom)
+
+    # Check if board_to_world has flipped
+    board_rel_disp = 0.0
+    if len(data_tuples) > 0:
+        board_rel_disp = np.linalg.norm(se3.vector_from_algebra(SE3.algebra_from_group(
+            np.dot(np.linalg.inv(data_tuples[-1][2]), board_to_world))))
+    if board_rel_disp > 0.1:
+        tang = se3.vector_from_algebra(SE3.algebra_from_group(
+            np.dot(np.linalg.inv(data_tuples[-1][2]), board_to_world)))
+        print 'Board rot disp {0} trans disp {1}'.format(
+            np.linalg.norm(tang[:3]), np.linalg.norm(tang[3:]))
+        return
 
     # Get detection from tracker
     pixels = []
@@ -284,25 +176,33 @@ def got_tuple(img_msg, cam_odom, board_odom):
 
     gray = cv2.cvtColor(debug_img, cv2.COLOR_BGR2GRAY)
 
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.01)
     axis = np.float32([[s*cols, 0, 0], [0, s*rows, 0],
                        [0, 0, 0.5]]).reshape(-1, 3)
 
     ret, corners = cv2.findChessboardCorners(
-        gray, (cols, rows), None, cv2.CALIB_CB_FILTER_QUADS)
+        gray, (cols, rows), flags=cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE)
     cv2.drawChessboardCorners(debug_img, (cols, rows), corners, ret)
     cv2.imshow('PreRefinement', debug_img)
 
     if ret == False:
-        print 'yikes!'
-        cv2.waitKey(-1)
+        cv2.waitKey(10)
         return
 
     if ret == True:
         if K is None:
             print 'K not initialized yet!'
             return
-        corners2 = cv2.cornerSubPix(gray, corners, (5, 5), (-1, -1), criteria)
+        # Use a radius of half the minimum distance between corners
+        min_colwise_dist = np.min(
+            np.sum(np.diff(corners.reshape(rows, cols, 2), axis=0)**2, axis=2))
+        min_rowwise_dist = np.min(
+            np.sum(np.diff(corners.reshape(rows, cols, 2), axis=1)**2, axis=2))
+        min_dist = np.sqrt(min(min_colwise_dist, min_rowwise_dist))
+        radius = int(np.ceil(min_dist*0.5))
+
+        corners2 = cv2.cornerSubPix(
+            gray, corners, (radius, radius), (-1, -1), criteria)
         corners2.shape = (corners2.shape[0], corners2.shape[-1])
 
         # Find the rotation and translation vectors.
@@ -317,29 +217,16 @@ def got_tuple(img_msg, cam_odom, board_odom):
             imgpts, jac = cv2.projectPoints(
                 axis, rvecs, tvecs, K, np.zeros((1, 4)))
 
-            if use_gtsam:
-                body_to_board = np.dot(
-                    np.linalg.inv(board_to_world), body_to_world)
-                # calibrator.add_measurement(body_to_board.astype(
-                #     np.float), corners2.astype(np.float))
-                # calibrator.add_measurement(body_to_world.astype(
-                #     np.float), corners2.astype(np.float))
-                calibrator.add_measurement(
-                    body_to_world, board_to_world, corners2.astype(np.float))
-
             if visualize:
                 cv2.drawChessboardCorners(
                     debug_img, (cols, rows), corners2, ret)
-                img_msg = bridge.cv2_to_imgmsg(debug_img)
-                img_msg.header.frame_id = 'cam'
-                img_pub.publish(img_msg)
+                debug_img_msg = bridge.cv2_to_imgmsg(debug_img)
+                debug_img_msg.header.frame_id = 'cam'
+                img_pub.publish(debug_img_msg)
                 K_msg.header.stamp = img_msg.header.stamp
                 cam_info_pub.publish(K_msg)
 
                 debug_img = draw(debug_img, corners2, imgpts)
-
-                print ret
-
                 cam_to_world = np.dot(body_to_world, cam_to_body)
 
                 broadcaster.sendTransform(body_to_world[:3, 3],
@@ -384,8 +271,6 @@ def got_tuple(img_msg, cam_odom, board_odom):
 
             diff = se3.vector_from_algebra(SE3.algebra_from_group(diff))
             diffs_vector.append(diff)
-            print diff
-            print np.linalg.norm(diff[:3])
             # I'm curious to see the projected mocap frame in the image too
             pts = np.eye(4)
             pts[3, :] = 1
@@ -403,6 +288,126 @@ def got_tuple(img_msg, cam_odom, board_odom):
             cv2.imshow('img', debug_img)
             cv2.waitKey(10)
 
+            if do_temporal_offset_detection:
+                if not offset_found:
+                    # Compute pnp odom and corresponding mocap odom
+                    # We compare the z differences
+
+                    # Get dt, if it's too large, don't append odom
+
+                    dt = img_msg.header.stamp.to_sec() - \
+                        sampled_pnp_timestamps[-1]
+                    # if dt < 0.5:
+                    cam_in_world_through_tag = np.dot(board_to_world,  np.dot(
+                        tag_in_board, np.linalg.inv(tag_in_cam)))
+                    sampled_pnp_odom.append(
+                        tf.transformations.euler_from_matrix(cam_in_world_through_tag)[1])
+                    # cam_in_world_through_tag[2,3])
+                    # np.dot(prev_pnp, np.linalg.inv(tag_in_cam)))
+                    # else:
+                    # sampled_pnp_odom.append(np.eye(4))
+                    sampled_pnp_timestamps.append(
+                        img_msg.header.stamp.to_sec())
+                    prev_pnp = tag_in_cam
+                    prev_mocap = body_to_world
+                    if len(sampled_pnp_odom) >= buffer_size:
+                        import matplotlib.pyplot as plt
+                        plt.figure()
+                        sampled_mocap_odom = sampled_mocap_odom[1:]
+                        sampled_pnp_odom = sampled_pnp_odom[1:]
+                        sampled_mocap_timestamps = sampled_mocap_timestamps[1:]
+                        sampled_pnp_timestamps = sampled_pnp_timestamps[2:]
+
+                        # Mini optimisation to find offset
+                        def mini_cost(dt):
+                            sampled_odoms = np.interp(
+                                np.array(sampled_pnp_timestamps) + dt, np.array(sampled_mocap_timestamps), np.array(sampled_mocap_odom))
+                            return np.sum(
+                                (np.array(sampled_pnp_odom) - np.array(sampled_odoms))**2)
+
+                        sample_pts_for_mini = np.linspace(-0.1, 0.1, 200)
+                        mini_costs = [mini_cost(dt)
+                                      for dt in sample_pts_for_mini]
+
+                        plt.plot(mini_costs)
+                        min_idx_mini_cost = np.argmin(mini_costs)
+                        print 'mini_costs min is {0} corresonding to dt of {1}'.format(
+                            min_idx_mini_cost, sample_pts_for_mini[min_idx_mini_cost])
+                        offset_dt = sample_pts_for_mini[min_idx_mini_cost]
+
+                        # # Find longest sequence of continuous pnp odom
+                        # discont_ids = np.array(
+                        #     np.where(np.diff(sampled_pnp_timestamps) > 0.5))[0]
+                        # longest_idx = np.argmax(np.diff(discont_ids))
+                        # sampled_pnp_odom = sampled_pnp_odom[discont_ids[longest_idx]: discont_ids[longest_idx+1]]
+                        # sampled_pnp_timestamps = sampled_pnp_timestamps[
+                        #     discont_ids[longest_idx]: discont_ids[longest_idx+1]]
+
+                        # # Okay, now let's look at a 1s buffer of mocap on either end
+                        # first_mocap_idx = max(0, np.searchsorted(
+                        #     sampled_mocap_timestamps, sampled_pnp_timestamps[0]) - 50)
+                        # last_mocap_idx = min(len(sampled_mocap_timestamps), np.searchsorted(
+                        #     sampled_mocap_timestamps, sampled_pnp_timestamps[-1], 'right') + 50)
+                        # sampled_mocap_timestamps = sampled_mocap_timestamps[
+                        #     first_mocap_idx:last_mocap_idx]
+                        # sampled_mocap_odom = sampled_mocap_odom[first_mocap_idx:last_mocap_idx]
+
+                        # # Use numpy's corr to determine offset
+                        # corr = np.correlate(
+                        #     np.array(sampled_mocap_odom) -
+                        #     sampled_mocap_odom[0],
+                        #     np.array(sampled_pnp_odom) - sampled_pnp_odom[0], mode='valid')
+
+                        # # The size of corr is len(arg1) + len(arg2), and an ideal alignment
+                        # # should give a value of 0 offset_idx
+                        # # see https://stackoverflow.com/questions/49372282/find-the-best-lag-from-the-numpy-correlate-output
+
+                        # # Additional check required to find argmax only in central
+                        # offset_idx = corr.argmax() - (len(sampled_mocap_odom) - 1)
+                        # # This is the offset in index, what does it mean for time?
+                        # offset_dt = offset_idx * \
+                        #     np.mean(np.diff(sampled_mocap_timestamps))
+                        # # Finally, plot the aligned data. Shift mocap data.
+                        # shifted_mocap_timestamps = []
+                        # shifted_mocap_odom = []
+                        # if offset_idx >= 0:
+                        #     shifted_mocap_timestamps = sampled_mocap_timestamps[:-offset_idx]
+                        #     shifted_mocap_odom = sampled_mocap_odom[:-offset_idx]
+                        # else:
+                        #     shifted_mocap_timestamps = sampled_mocap_timestamps[:offset_idx]
+                        #     shifted_mocap_odom = sampled_mocap_odom[-offset_idx:]
+
+                        # plt.plot(sampled_mocap_timestamps,
+                        #          sampled_mocap_odom, '--', label='original_mocap')
+                        # plt.plot(shifted_mocap_timestamps,
+                        #          shifted_mocap_odom, label='shifted_mocap')
+                        # plt.plot(sampled_pnp_timestamps,
+                        #          sampled_pnp_odom, label='pnp')
+                        # plt.legend()
+                        # plt.figure()
+                        # plt.plot(corr)
+                        # plt.vlines(len(sampled_mocap_odom), 0.0, np.max(corr))
+
+                        # print 'Offset idx is {0} and dt is {1} s'.format(
+                        #     offset_idx, offset_dt)
+                        # plt.vlines(len(sampled_mocap_odom) +
+                        #            offset_idx, 0.0, np.max(corr), 'b')
+                        plt.show()
+                        pdb.set_trace()
+                        offset_found = True
+                    else:
+                        # Only add to data_tuples until we have an offset
+                        return
+                elif offset_running:
+                    # Don't add anything to calibrator or data_tuples
+                    return
+
+            if use_gtsam:
+                body_to_board = np.dot(
+                    np.linalg.inv(board_to_world), body_to_world)
+                calibrator.add_measurement(
+                    body_to_world, board_to_world, corners2.astype(np.float))
+
             data_tuples.append(
                 [corners2, body_to_world, board_to_world, tag_in_cam])
             img_tuples.append(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR))
@@ -416,16 +421,16 @@ if __name__ == "__main__":
 
     if cam == 'kinect':
         topics_to_parse = ['/kinect2/qhd/image_color_rect',
-                           '/kinect_one_new/vicon_odom', checkerboard_topic, '/kinect2/qhd/camera_info']
+                           '/kinect_one_new/vicon_odom', checkerboard_topic]
     elif cam == 'realsense':
-        topics_to_parse = ['/camera/color/image_raw',
-                           '/realsense_rig_new/vicon_odom', checkerboard_topic, '/camera/color/camera_info']
+        topics_to_parse = ['/camera/infra1/image_rect_raw',
+                           '/realsense_rig_new/vicon_odom', checkerboard_topic]
 
     subs = []
     subs.append(Subscriber(topics_to_parse[0], Image))
     subs.append(Subscriber(topics_to_parse[1], Odometry))
     subs.append(Subscriber(topics_to_parse[2], Odometry))
-    synchronizer = ApproximateTimeSynchronizer(subs, 10, 0.1)
+    synchronizer = ApproximateTimeSynchronizer(subs, 100, 0.02)
 
     synchronizer.registerCallback(got_tuple)
 
@@ -435,8 +440,28 @@ if __name__ == "__main__":
     file_path = glob.glob(extrinsics_save_name)
     # if not file_path:
     with open('../config/checkerboard_extrinsics_calib.yaml', 'r') as f:
+        ext_calib_node = yaml.load(f)['extrinsics_calib_params']
         cam_to_body = np.array(
-            yaml.load(f)['extrinsics_calib_params']['extrinsics_guess']).reshape(4, 4)
+            ext_calib_node['extrinsics_guess']).reshape(4, 4)
+        K = np.eye(3)
+        K_node = ext_calib_node['intrinsics_guess']
+        K[0, 0] = K_node[0]
+        K[1, 1] = K_node[1]
+        K[0, 2] = K_node[3]
+        K[1, 2] = K_node[4]
+        K_msg = CameraInfo()
+        K_msg.K = K.flatten()
+        K_msg.R = np.eye(3).flatten()
+        K_msg.height = ext_calib_node['height']
+        K_msg.width = ext_calib_node['width']
+        # CameraInfo wants k1, k2, p1, p2, k3
+        K_msg.D = np.array(
+            [K_node[7], K_node[8], K_node[5], K_node[6], K_node[9]])
+        P = np.eye(4)
+        P[:3, :3] = K
+        K_msg.P = P[:3, :].flatten()
+        K_msg.distortion_model = 'plumb_bob'
+
     print 'cam_to_body loaded {0}'.format(cam_to_body)
     # else:
     # cam_to_body = np.load(extrinsics_save_name)
@@ -444,42 +469,80 @@ if __name__ == "__main__":
     if use_bag:
         with rosbag.Bag(path, 'r') as bag:
             counter = 0
+            if do_temporal_offset_detection:
+                # We run through the bag twice, first time to determine temporal offset,
+                # then second time applying this offset to the image data for
+                # approx synchronizer
+                for topic, msg, t in bag.read_messages(topics_to_parse):
+                    index = topics_to_parse.index(topic)
+
+                    if offset_found:
+                        break
+                    if index == 1:
+                        body_to_world = transform_matrix_from_odom(msg)
+                        sampled_mocap_odom.append(
+                            tf.transformations.euler_from_matrix(body_to_world)[1])
+                        sampled_mocap_timestamps.append(
+                            msg.header.stamp.to_sec())
+                        prev_mocap = body_to_world
+                    # TODO: Avoid race conditions?
+                    subs[index].signalMessage(msg)
+                # Ok, we now have the offset! Reset approxsynchronizer
+                subs = []
+                subs.append(Subscriber(topics_to_parse[0], Image))
+                subs.append(Subscriber(topics_to_parse[1], Odometry))
+                subs.append(Subscriber(topics_to_parse[2], Odometry))
+                synchronizer = ApproximateTimeSynchronizer(subs, 2, 0.01)
+                synchronizer.registerCallback(got_tuple)
+                # Reset data_tuples
+                data_tuples = []
+                img_tuples = []
+                # Reset calibrator
+                calibrator = CheckerboardExtrinsicCalibration(
+                    '../config/checkerboard_extrinsics_calib.yaml')
+                offset_running = False
+                print 'Offset found, restarting!'
+
             for topic, msg, t in bag.read_messages(topics_to_parse):
                 if topic in topics_to_parse:
                     index = topics_to_parse.index(topic)
-                    if topic in ['/kinect2/qhd/camera_info', '/camera/color/camera_info']:
-                        # Assign the K here
-                        K = np.array(msg.K).astype(datatype).reshape(3, 3)
-                        print 'K is {0}'.format(K)
-                        K_msg = msg
-                        K_msg.header.frame_id = 'cam'
-                        del topics_to_parse[index]
-                    else:
-                        subs[index].signalMessage(msg)
-                        counter += 1
-                        if counter % 1000 == 0:
-                            print 'Read {0} tuples'.format(counter)
+                    if index in [1, 2]:
+                        msg.header.stamp = rospy.Time(
+                            msg.header.stamp.to_sec() - offset_dt)
+
+                    subs[index].signalMessage(msg)
+                    counter += 1
+
+        print 'Done reading bag!'
+        tangents = np.array([se3.vector_from_algebra(SE3.algebra_from_group(np.dot(np.linalg.inv(
+            a), b))) for a, b in zip(np.array(data_tuples)[:-1, 2], np.array(data_tuples)[1:, 2])])
+        rot_norms = np.linalg.norm(tangents[:, :3], axis=1)
+        trans_norms = np.linalg.norm(tangents[:, 3:], axis=1)
+        print 'BOARD ODOM:: Rotations Norm::{0} Std::{1} Translations Norm::{2} Std::{3}'.format(
+            np.mean(rot_norms), np.std(rot_norms), np.mean(trans_norms), np.std(trans_norms))
         if use_gtsam:
             t_in_board = np.eye(4)
             cam_to_body = np.eye(4)
             landmark_pts = np.zeros((rows*cols, 3))
             cam_poses = np.zeros((len(data_tuples), 16))
-            K_calib = np.zeros((3,3))
+            K_calib = np.zeros((3, 3))
             K_copy = K.copy()
-            dist_coeff = np.array([[0, 0, 0, 0]], dtype=np.float32)
+            dist_coeffs = np.array(
+                [[K_msg.D[0], K_msg.D[1], K_msg.D[2], K_msg.D[3]]])
             points_2d = np.array([t[0] for t in data_tuples])
+            # print 'Calibrating camera...'
             # Uncomment if using distortion
             # result = cv2.calibrateCamera(np.array([objp]*len(data_tuples)), points_2d.reshape(len(data_tuples), rows*cols, 2), (640, 480), K_copy, dist_coeff, flags=cv2.CALIB_RATIONAL_MODEL)
 
-            result = cv2.calibrateCamera(np.array([objp]*len(data_tuples)), points_2d.reshape(len(data_tuples), rows*cols, 2), (640, 480), K_copy, dist_coeff, flags=cv2.CALIB_ZERO_TANGENT_DIST | cv2.CALIB_USE_INTRINSIC_GUESS | cv2.CALIB_FIX_K1 | cv2.CALIB_FIX_K2 | cv2.CALIB_FIX_K3)
+            # result = cv2.calibrateCamera(np.array([objp]*len(data_tuples)), points_2d.reshape(len(data_tuples), rows*cols, 2), (640, 480), K_copy, dist_coeff, flags=cv2.CALIB_ZERO_TANGENT_DIST | cv2.CALIB_USE_INTRINSIC_GUESS | cv2.CALIB_FIX_K1 | cv2.CALIB_FIX_K2 | cv2.CALIB_FIX_K3)
+            # K = result[1]
+            # dist_coeffs = result[2]
 
-            calibrator.solve(cam_to_body, t_in_board, cam_poses, landmark_pts, K_calib)
-            print 'In python K is '
-            print K_calib
-            if not np.allclose(K_calib , np.zeros((3,3))):
+            calibrator.solve(cam_to_body, t_in_board,
+                             cam_poses, landmark_pts, K_calib)
+            if not np.allclose(K_calib, np.zeros((3, 3))):
                 K = K_calib
-            K = result[1]
-            dist_coeffs = result[2]
+
             for i in range(len(data_tuples)):
                 # Send tf frame
                 pose = cam_poses[i].reshape(4, 4).T
@@ -513,80 +576,6 @@ if __name__ == "__main__":
                     Point(landmark_pts[i, 0], landmark_pts[i, 1], landmark_pts[i, 2]))
             marker_pub.publish(marker)
             pdb.set_trace()
-        else:
-            # Try to use a black box optimizer
-            print 'Starting optimization...'
-            from scipy.optimize import minimize, least_squares
-            # Since initial guess is pretty close to identity
-            initial_guess = np.array([0.0, 0, 0, 0, 0, 0])
-            # if use_camodocal_prealign:
-            #     # Save the tuple pairs in opencv format
-            #     # example
-            #     with open('TransformPairsInput.yml', 'w') as f:
-            #         f.write("%YAML:1.0\n")
-            #         f.write("frameCount: " + str(len(data_tuples)) + "\n")
-            #         ind = 0
-            #         for measurement, body_to_world, board_to_world, tag_in_cam in data_tuples:
-            #             tag_in_world = np.dot(
-            #                 board_to_world, tag_in_board)
-            #             tag_in_body = np.dot(np.linalg.inv(
-            #                 body_to_world), tag_in_world)
-            #             yaml.dump({"T1_"+str(ind): tag_in_cam,
-            #                        "T2_"+str(ind): tag_in_body}, f)
-            #             ind += 1
-            #     print 'Written to TransformPairsInput.yml, replace in calib package and continue when CalibratedTransform.yml is copied into cwd...'
-            #     pdb.set_trace()
-            #     with open('CalibratedTransform.yml', 'r') as f:
-            #         f.readline()
-            #         T_init_guess = yaml.load(
-            #             f)['ArmTipToMarkerTagTransform'].reshape(4, 4)
-            #         # T_init_guess = np.linalg.inv(T_init_guess)
-            #         rvec = cv2.Rodrigues(T_init_guess[:3, :3])[0]
-            #         tvec = T_init_guess[:3, 3]
-            #     initial_guess = se3.vector_from_algebra(
-            #         SE3.algebra_from_group(np.linalg.inv(T_init_guess)))
-            #     pdb.set_trace()
-
-            # The delta transform can just be solved by using solvePnP again
-            # result = minimize(lambda x: meta_cost_function(x)[1], initial_guess)
-            result, error = meta_cost_function(initial_guess, True)
-
-            # res_lsq = least_squares(cost_function, initial_guess)
-            # rvec = res_lsq.x[:3]
-            # tvec = res_lsq.x[3:]
-            # pdb.set_trace()
-
-            # result = minimize(cost_function, initial_guess)
-            # pdb.set_trace()
-            # pdb.set_trace()
-            # rvec = result.x[:3]
-            # tvec = result.x[3:]
-            # print 'error was {0}'.format(error)
-            rvec = result[1]
-            tvec = result[2]
-            inliers = result[3]
-            body_to_cam = np.eye(4)
-            body_to_cam[:3, :3] = cv2.Rodrigues(rvec)[0]
-            body_to_cam[:3, 3] = tvec.ravel()
-            cam_to_body = np.linalg.inv(body_to_cam)
-
-            # print 'Done, results is'
-            # print rvec, tvec
-
-            # tag_in_board_offset = result.x[6:]
-            print 'cam_in_body found was {0}'.format(cam_to_body)
-
-            # result = minimize(lambda x: meta_cost_function(x)
-            #                   [1], np.zeros((6, 1)))
-            # delta = np.eye(4)
-            # delta[:3, :3] = cv2.Rodrigues(result.x[:3])[0]
-            # delta[:3, 3] = result.x[3:]
-
-            # t_in_board = np.dot(tag_in_board, delta)
-            # print 'tag_in_board was {0}'.format(t_in_board)
-            # print tag_in_board_offset
-            t_in_board = tag_in_board.copy()
-
         # Perform validation visualisations
         i = 0
         px_counter = 0
@@ -596,14 +585,16 @@ if __name__ == "__main__":
         error = 0
 
         for measurement, body_to_world, board_to_world, tag_in_cam in data_tuples:
-            cam_to_board = np.dot( np.linalg.inv(board_to_world) ,np.dot(body_to_world, cam_to_body))
-            landmark_pts_in_cam = np.dot( np.linalg.inv(cam_to_board), np.concatenate((landmark_pts, np.ones((rows*cols,1))), axis=1).T)
+            cam_to_board = np.dot(np.linalg.inv(
+                board_to_world), np.dot(body_to_world, cam_to_body))
+            landmark_pts_in_cam = np.dot(np.linalg.inv(cam_to_board), np.concatenate(
+                (landmark_pts, np.ones((rows*cols, 1))), axis=1).T)
             # projections = np.dot(K, landmark_pts_in_cam[:3,:])
             # projections /= projections[2, :]
             # projections = projections[:2, :].T
 
             projections, jac = cv2.projectPoints(
-                landmark_pts_in_cam.T[:, :3], np.zeros((3,1)), np.zeros((3,1)) , K, dist_coeffs)
+                landmark_pts_in_cam.T[:, :3], np.zeros((3, 1)), np.zeros((3, 1)), K, dist_coeffs)
             projections.shape = (projections.shape[0], projections.shape[-1])
             debug_img = img_tuples[i]
             error += (np.sqrt(np.sum((measurement - projections)**2, axis=1))).sum()
@@ -690,7 +681,7 @@ if __name__ == "__main__":
                 "board")
 
             cv2.waitKey(-1)
-
+            # pdb.set_trace()
             i += 1
         print 'Final error is {0}'.format(error)
         if raw_input('Save? y/n') in ['y', 'Y']:
